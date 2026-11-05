@@ -1,5 +1,6 @@
 from app.forecast import days_left, reorder_qty, risk_level
 
+
 def test_bakery_example_three_days_left():
     assert days_left(stock=120, incoming=0, daily_usage=40) == 3
 
@@ -26,6 +27,7 @@ def test_ok_when_plenty_of_stock():
 
 def test_no_usage_is_ok():
     assert risk_level(None, lead_time_days=3) == "ok"
+
 
 def test_reorder_qty_basic():
     assert reorder_qty(120, 0, 40, lead_time_days=2, buffer_days=3) == 80

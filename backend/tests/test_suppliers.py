@@ -15,6 +15,7 @@ def test_no_usage_always_in_time():
     s = Supplier("Acme", unit_price=2, lead_time_days=10)
     assert arrives_in_time(s, days_of_stock_left=None) is True
 
+
 def test_unapproved_supplier_is_excluded():
     suppliers = [
         Supplier("Cheap but unapproved", unit_price=1, lead_time_days=1, approved=False),

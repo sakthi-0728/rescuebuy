@@ -22,9 +22,9 @@ class Order:
     paypal_order_id: str | None = None
     authorization_id: str | None = None
     capture_id: str | None = None
+    authorized_at: str | None = None
     item: str = "boxes"
     timeline: list[dict] = field(default_factory=list)
-    authorized_at: str | None = None
 
     def __post_init__(self):
         if not self.timeline:
@@ -44,6 +44,7 @@ def add_event(order: Order, event_type: str, detail: str) -> None:
         }
     )
 
+
 HONOR_DAYS = 3
 VALID_DAYS = 29
 
@@ -59,6 +60,7 @@ def authorization_state(order: Order, now: datetime | None = None) -> str | None
     if age > timedelta(days=HONOR_DAYS):
         return "past_honor"
     return "fresh"
+
 
 def approve(order: Order) -> Order:
     if order.status != Status.PENDING_APPROVAL:
@@ -82,6 +84,16 @@ def start_payment(order: Order, paypal_order_id: str) -> Order:
     order.status = Status.PAYMENT_STARTED
     order.paypal_order_id = paypal_order_id
     add_event(order, "PAYMENT_STARTED", "PayPal order created, waiting for buyer approval")
+    return order
+
+
+def restart_payment(order: Order) -> Order:
+    """Let the owner try again if the PayPal approval was cancelled or abandoned."""
+    if order.status != Status.PAYMENT_STARTED:
+        raise ValueError(f"Cannot restart payment for an order that is {order.status.value}")
+    order.status = Status.APPROVED
+    order.paypal_order_id = None
+    add_event(order, "PAYMENT_RESTARTED", "Payment was not completed, ready to pay again")
     return order
 
 

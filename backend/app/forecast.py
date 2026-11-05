@@ -1,10 +1,12 @@
 import math
 
+
 def days_left(stock: float, incoming: float, daily_usage: float) -> float | None:
     """Days until stock runs out. None means no usage, so it never runs out."""
     if daily_usage <= 0:
         return None
     return (stock + incoming) / daily_usage
+
 
 def risk_level(days: float | None, lead_time_days: float, buffer_days: float = 2) -> str:
     """critical: runs out before a new order could arrive."""
@@ -15,6 +17,7 @@ def risk_level(days: float | None, lead_time_days: float, buffer_days: float = 2
     if days <= lead_time_days + buffer_days:
         return "warning"
     return "ok"
+
 
 def reorder_qty(
     stock: float,
@@ -31,4 +34,3 @@ def reorder_qty(
     if budget is not None and unit_price:
         qty = min(qty, math.floor(budget / unit_price))
     return qty
-

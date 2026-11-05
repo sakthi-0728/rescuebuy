@@ -28,7 +28,7 @@ def recommend(
 
     supplier = best_supplier(suppliers, days)
     if supplier is None:
-        # Nobody qualifies. Use the slowest approved lead time just to report risk.
+        # Nobody qualifies. Use the fastest approved lead time just to report risk.
         approved = [s for s in suppliers if s.approved]
         lead = min((s.lead_time_days for s in approved), default=0)
         return Recommendation(
@@ -45,6 +45,6 @@ def recommend(
     if qty == 0:
         return Recommendation(days, risk, supplier, 0, 0.0, None, "Stock is sufficient. No order needed.")
 
-    total = supplier.unit_price * qty
+    total = supplier.unit_price * qty + supplier.delivery_fee
     result = check_order(supplier, qty, policy)
     return Recommendation(days, risk, supplier, qty, total, result, "Order recommended.")

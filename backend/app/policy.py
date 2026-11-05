@@ -5,7 +5,7 @@ from app.suppliers import Supplier
 
 @dataclass
 class Policy:
-    max_auto_spend: float = 500   # above this, the owner must approve
+    max_auto_spend: float = 500   # above this, the order is flagged as a large order
     budget: float = 2000          # above this, the order is not allowed
 
 
@@ -17,8 +17,8 @@ class PolicyResult:
 
 
 def check_order(supplier: Supplier, qty: int, policy: Policy) -> PolicyResult:
-    """Validate an order against the business rules."""
-    total = supplier.unit_price * qty
+    """Validate an order against the business rules. The total includes delivery."""
+    total = supplier.unit_price * qty + supplier.delivery_fee
 
     if not supplier.approved:
         return PolicyResult(False, False, ["Supplier is not on the approved list"])

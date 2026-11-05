@@ -25,6 +25,7 @@ def get_access_token() -> str:
     response.raise_for_status()
     return response.json()["access_token"]
 
+
 def create_paypal_order(amount: float, description: str) -> dict:
     """Create a PayPal order that authorizes payment without capturing it."""
     base_url = os.getenv("PAYPAL_BASE_URL", "https://api-m.sandbox.paypal.com")
@@ -59,6 +60,7 @@ def create_paypal_order(amount: float, description: str) -> dict:
     response.raise_for_status()
     return response.json()
 
+
 def authorize_paypal_order(paypal_order_id: str) -> dict:
     """After the buyer approves, reserve the money (no charge yet)."""
     base_url = os.getenv("PAYPAL_BASE_URL", "https://api-m.sandbox.paypal.com")
@@ -75,6 +77,7 @@ def authorize_paypal_order(paypal_order_id: str) -> dict:
     )
     response.raise_for_status()
     return response.json()
+
 
 def capture_authorization(authorization_id: str) -> dict:
     """Take the reserved money. Call this only after delivery is confirmed."""
@@ -93,6 +96,7 @@ def capture_authorization(authorization_id: str) -> dict:
     )
     response.raise_for_status()
     return response.json()
+
 
 WEBHOOK_HEADERS = [
     "paypal-auth-algo",

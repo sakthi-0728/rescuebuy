@@ -36,3 +36,17 @@ def test_unapproved_supplier_is_blocked():
     result = check_order(s, qty=10, policy=POLICY)
     assert result.allowed is False
     assert "approved list" in result.reasons[0]
+
+
+def test_delivery_fee_counts_toward_the_total():
+    s = Supplier("Acme", unit_price=2, lead_time_days=2, delivery_fee=100)
+    result = check_order(s, qty=200, policy=POLICY)  # $400 + $100 = exactly $500
+    assert result.needs_approval is False
+    result = check_order(s, qty=201, policy=POLICY)  # $502
+    assert result.needs_approval is True
+
+
+def test_delivery_fee_can_push_an_order_over_budget():
+    s = Supplier("Acme", unit_price=2, lead_time_days=2, delivery_fee=50)
+    result = check_order(s, qty=1000, policy=POLICY)  # $2000 + $50
+    assert result.allowed is False

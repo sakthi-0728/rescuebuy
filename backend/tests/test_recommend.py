@@ -39,6 +39,7 @@ def test_no_eligible_supplier_escalates():
     assert r.supplier is None
     assert r.message == "No eligible supplier. Escalate to the owner."
 
+
 def test_big_order_needs_approval():
     # 600 boxes, 200/day -> 3 days left. Acme (2 days) is in time.
     # qty = 200 * (2 + 3) - 600 = 400, total = $800, above the $500 limit.

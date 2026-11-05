@@ -1,455 +1,299 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-const API = "http://127.0.0.1:8000";
+import { get, messageOf, post } from "./api";
+import { AnalyticsTab } from "./components/AnalyticsTab";
+import { AssistantTab } from "./components/AssistantTab";
+import { InventoryTable } from "./components/InventoryTable";
+import { LabTab } from "./components/LabTab";
+import { NeedsAttention } from "./components/NeedsAttention";
+import { OrdersPanel } from "./components/OrdersPanel";
+import { ReviewPanel } from "./components/ReviewPanel";
+import { SummaryStrip } from "./components/SummaryStrip";
+import { money } from "./format";
+import type { Dashboard, ItemRow, Order, Recommendation } from "./types";
 
-type Item = {
-  item: string;
-  unit: string;
-  stock: number;
-  daily_usage: number;
-  incoming: number;
-  days_left: number | null;
-  risk: "ok" | "warning" | "critical";
-};
-
-type Option = {
-  name: string;
-  unit_price: number;
-  qty: number;
-  total: number;
-  lead_time_days: number;
-  reliability: number;
-  needs_approval: boolean;
-  chosen: boolean;
-};
-
-type Recommendation = {
-  days_left: number | null;
-  message: string;
-  options: Option[];
-  choice: { supplier: string; reason: string; source: string } | null;
-  explanation: { text: string; source: string };
-};
-
-type TimelineEvent = { type: string; detail: string; time: string };
-
-type Order = {
-  id: number;
-  supplier_name: string;
-  qty: number;
-  total: number;
-  status: string;
-  item: string;
-  timeline: TimelineEvent[];
-};
-
-function formatDays(days: number | null): string {
-  if (days === null) return "No usage";
-  return String(Math.round(days * 10) / 10);
-}
-
-function money(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
-
-function choiceLabel(source: string): string {
-  if (source === "gemini") return "Chosen by Gemini";
-  if (source === "rules") return "Only one supplier qualifies";
-  return "Chosen by rules (AI unavailable)";
-}
-
-async function readError(response: Response): Promise<string> {
-  try {
-    const body = await response.json();
-    const detail = body.detail;
-    if (typeof detail === "string") return detail;
-    if (Array.isArray(detail)) return detail.join(" ");
-    return "Request failed.";
-  } catch {
-    return "Request failed.";
+/** PayPal sends the buyer back to /?payment=authorized&order=1 (or =cancelled). */
+function paymentBannerFromUrl(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const payment = params.get("payment");
+  if (payment === "authorized") {
+    return `Payment authorized for order ${params.get("order")}. The money is reserved, not charged.`;
   }
+  if (payment === "cancelled") {
+    return "Payment was cancelled. No money was reserved. Use Restart payment to try again.";
+  }
+  return null;
 }
+
+type Tab = "overview" | "ask" | "lab" | "analytics";
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "ask", label: "Ask Rescue AI" },
+  { id: "lab", label: "Decision Lab" },
+  { id: "analytics", label: "Analytics" },
+];
 
 export default function App() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Item | null>(null);
-  const [rec, setRec] = useState<Recommendation | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [recError, setRecError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("overview");
+  const [items, setItems] = useState<ItemRow[]>([]);
+  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(paymentBannerFromUrl);
+
+  const [selected, setSelected] = useState<string | null>(null);
+  const [rec, setRec] = useState<Recommendation | null>(null);
+  const [recLoading, setRecLoading] = useState(false);
+  const [recError, setRecError] = useState<string | null>(null);
+  const [reviewMsg, setReviewMsg] = useState<string | null>(null);
+
   const [orderMsg, setOrderMsg] = useState<string | null>(null);
-  const [banner, setBanner] = useState<string | null>(null);
   const [openOrder, setOpenOrder] = useState<number | null>(null);
 
-  function loadItems() {
-    fetch(`${API}/items`)
-      .then((response) => {
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
-        return response.json();
-      })
-      .then(setItems)
-      .catch(() =>
-        setError("Cannot reach the backend. Is it running on port 8000?")
-      );
-  }
+  const loadAll = useCallback(
+    () =>
+      Promise.all([get<ItemRow[]>("/items"), get<Dashboard>("/dashboard"), get<Order[]>("/orders")]),
+    []
+  );
 
-  function loadOrders() {
-    fetch(`${API}/orders`)
-      .then((response) => response.json())
-      .then(setOrders)
-      .catch(() => setOrderMsg("Could not load orders."));
-  }
-
-  useEffect(() => {
-    loadItems();
-    loadOrders();
-  }, []);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const payment = params.get("payment");
-    if (payment === "authorized") {
-      setBanner(
-        `Payment authorized for order ${params.get("order")}. The money is reserved, not charged.`
-      );
-    } else if (payment === "cancelled") {
-      setBanner("Payment was cancelled. No money was reserved.");
+  const refresh = useCallback(async () => {
+    try {
+      const [i, d, o] = await loadAll();
+      setItems(i);
+      setDashboard(d);
+      setOrders(o);
+      setError(null);
+    } catch (e) {
+      setError(messageOf(e));
+    } finally {
+      setLoading(false);
     }
-    if (payment) window.history.replaceState({}, "", window.location.pathname);
+  }, [loadAll]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadAll()
+      .then(([i, d, o]) => {
+        if (cancelled) return;
+        setItems(i);
+        setDashboard(d);
+        setOrders(o);
+        setLoading(false);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setError(messageOf(e));
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAll]);
+
+  // Tidy the address bar after PayPal sends the buyer back (the banner was read on first render).
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has("payment")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
   }, []);
 
-  function getRecommendation(row: Item) {
-    setSelected(row);
+  function reviewReorder(item: string) {
+    setSelected(item);
     setRec(null);
     setRecError(null);
-    setOrderMsg(null);
-    setLoading(true);
-    fetch(`${API}/recommend`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        stock: row.stock,
-        incoming: row.incoming,
-        daily_usage: row.daily_usage,
-        buffer_days: 3,
-        item: row.item,
-      }),
-    })
-      .then((response) => {
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
-        return response.json();
-      })
+    setReviewMsg(null);
+    setRecLoading(true);
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setTimeout(
+      () => document.getElementById("review")?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" }),
+      0
+    );
+    post<Recommendation>("/recommend", { item })
       .then(setRec)
-      .catch(() => setRecError("Could not get a recommendation."))
-      .finally(() => setLoading(false));
+      .catch((e: unknown) => setRecError(messageOf(e)))
+      .finally(() => setRecLoading(false));
   }
 
-  async function createOrder(supplierName: string) {
+  async function createOrder(supplier: string) {
     if (!selected) return;
-    setOrderMsg(null);
+    setReviewMsg(null);
     try {
-      const response = await fetch(`${API}/orders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          stock: selected.stock,
-          incoming: selected.incoming,
-          daily_usage: selected.daily_usage,
-          buffer_days: 3,
-          item: selected.item,
-          supplier: supplierName,
-        }),
-      });
-      if (!response.ok) {
-        setOrderMsg(await readError(response));
-        return;
-      }
-      setOrderMsg(`Order created with ${supplierName}. It now waits for approval.`);
-      loadOrders();
-    } catch {
-      setOrderMsg("Could not reach the backend.");
+      const order = await post<Order>("/orders", { item: selected, supplier });
+      setReviewMsg(`Order ${order.id} created with ${supplier} for ${money(order.total)}. It now waits for your approval below.`);
+      await refresh();
+    } catch (e) {
+      setReviewMsg(messageOf(e));
     }
   }
 
-  async function orderAction(id: number, action: "approve" | "reject") {
+  async function orderStep(path: string) {
     setOrderMsg(null);
     try {
-      const response = await fetch(`${API}/orders/${id}/${action}`, {
-        method: "POST",
-      });
-      if (!response.ok) setOrderMsg(await readError(response));
-    } catch {
-      setOrderMsg("Could not reach the backend.");
+      await post<unknown>(path);
+    } catch (e) {
+      setOrderMsg(messageOf(e));
     }
-    loadOrders();
+    await refresh();
   }
 
   async function payOrder(id: number) {
     setOrderMsg(null);
     try {
-      const response = await fetch(`${API}/orders/${id}/pay`, { method: "POST" });
-      if (!response.ok) {
-        setOrderMsg(await readError(response));
-        return;
-      }
-      const body = await response.json();
-      if (!body.approval_url) {
+      const result = await post<{ approval_url: string | null }>(`/orders/${id}/pay`);
+      if (!result.approval_url) {
         setOrderMsg("PayPal did not return an approval link.");
-        loadOrders();
+        await refresh();
         return;
       }
-      window.location.href = body.approval_url;
-    } catch {
-      setOrderMsg("Could not reach the backend.");
+      window.location.href = result.approval_url;
+    } catch (e) {
+      setOrderMsg(messageOf(e));
     }
   }
 
-  async function confirmDelivery(id: number) {
+  async function confirmDelivery(order: Order) {
+    const ok = window.confirm(
+      `Confirm that ${order.qty} ${order.item} from ${order.supplier_name} arrived?\n\n` +
+        `This charges ${money(order.total)} to PayPal (sandbox) and adds the stock.`
+    );
+    if (!ok) return;
     setOrderMsg(null);
     try {
-      const response = await fetch(`${API}/orders/${id}/confirm-delivery`, {
-        method: "POST",
-      });
-      if (!response.ok) {
-        setOrderMsg(await readError(response));
-      } else {
-        setOrderMsg(
-          `Delivery confirmed for order ${id}. Payment captured and stock updated.`
-        );
-        loadItems();
-      }
-    } catch {
-      setOrderMsg("Could not reach the backend.");
+      await post<unknown>(`/orders/${order.id}/confirm-delivery`);
+      setOrderMsg(`Delivery confirmed for order ${order.id}. Payment captured and stock updated.`);
+    } catch (e) {
+      setOrderMsg(messageOf(e));
     }
-    loadOrders();
+    await refresh();
   }
 
   async function resetDemo() {
-    if (!window.confirm("Reset the demo? This clears all orders and restores stock.")) {
-      return;
-    }
+    if (!window.confirm("Reset the demo? This clears all orders and restores the sample stock.")) return;
     try {
-      const response = await fetch(`${API}/demo/reset`, { method: "POST" });
-      if (!response.ok) {
-        setError(await readError(response));
-        return;
-      }
+      await post<unknown>("/demo/reset");
       setSelected(null);
       setRec(null);
       setOpenOrder(null);
       setBanner(null);
       setOrderMsg(null);
-      setError(null);
-      loadItems();
-      loadOrders();
-    } catch {
-      setError("Could not reach the backend.");
+      setReviewMsg(null);
+      await refresh();
+    } catch (e) {
+      setError(messageOf(e));
     }
   }
 
-  const timelineOrder = orders.find((o) => o.id === openOrder) ?? null;
+  const busy = recLoading;
+  const selectedOrder = items.find((i) => i.item === selected)?.open_order ?? null;
 
   return (
-    <main>
-      <h1>RescueBuy</h1>
-      <p className="sub">Inventory</p>
-      {banner && <p className="banner">{banner}</p>}
-      {error && <p className="error">{error}</p>}
-      <table>
-        <thead>
-          <tr>
-            <th>Item</th>
-            <th>Stock</th>
-            <th>Used per day</th>
-            <th>Days left</th>
-            <th>Risk</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((row) => (
-            <tr key={row.item}>
-              <td>{row.item}</td>
-              <td>
-                {row.stock} {row.unit}
-              </td>
-              <td>{row.daily_usage}</td>
-              <td>{formatDays(row.days_left)}</td>
-              <td>
-                <span className={`badge ${row.risk}`}>{row.risk}</span>
-              </td>
-              <td>
-                <button disabled={loading} onClick={() => getRecommendation(row)}>
-                  Get recommendation
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {selected && (
-        <section className="panel">
-          <h2>Recommendation for {selected.item}</h2>
-          {loading && <p>Asking Gemini to compare suppliers...</p>}
-          {recError && <p className="error">{recError}</p>}
-          {rec && (
-            <>
-              <p>{rec.message}</p>
-              <p>{rec.explanation.text}</p>
-              <p className="note">
-                {rec.explanation.source === "gemini"
-                  ? "Summary written by Gemini."
-                  : "Plain summary (AI unavailable)."}
-              </p>
-
-              {rec.options.length > 0 && (
-                <>
-                  <div className="scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Supplier</th>
-                          <th>Unit price</th>
-                          <th>Quantity</th>
-                          <th>Total</th>
-                          <th>Delivery</th>
-                          <th>Reliability</th>
-                          <th>Owner approval</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rec.options.map((o) => (
-                          <tr key={o.name} className={o.chosen ? "chosen" : ""}>
-                            <td>
-                              {o.name}
-                              {o.chosen && <span className="badge pick">chosen</span>}
-                            </td>
-                            <td>{money(o.unit_price)}</td>
-                            <td>{o.qty}</td>
-                            <td>{money(o.total)}</td>
-                            <td>{o.lead_time_days} days</td>
-                            <td>{Math.round(o.reliability * 100)}%</td>
-                            <td>{o.needs_approval ? "Required" : "Not needed"}</td>
-                            <td>
-                              <button onClick={() => createOrder(o.name)}>
-                                Create order
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {rec.choice && (
-                    <>
-                      <p>
-                        <strong>{rec.choice.supplier}:</strong> {rec.choice.reason}
-                      </p>
-                      <p className="note">{choiceLabel(rec.choice.source)}</p>
-                    </>
-                  )}
-                </>
-              )}
-            </>
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">
+          <span className="mark" aria-hidden="true" />
+          <div>
+            <h1>RescueBuy</h1>
+            <p>Never run out of stock, and never pay for goods that did not arrive.</p>
+          </div>
+        </div>
+        <div className="topbar-actions">
+          {dashboard?.demo_data && (
+            <span className="badge demo" title="Sample bakery data created on first start">
+              Demo data
+            </span>
           )}
-        </section>
-      )}
+          <button onClick={resetDemo}>Reset demo</button>
+        </div>
+      </header>
 
-      <section className="panel">
-        <h2>Orders</h2>
-        {orderMsg && <p className="note">{orderMsg}</p>}
-        {orders.length === 0 ? (
-          <p className="note">No orders yet.</p>
-        ) : (
+      <nav className="tabs" role="tablist" aria-label="Sections">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            className={`tab${tab === t.id ? " active" : ""}`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      <main>
+        {banner && (
+          <p className="banner" role="status">
+            {banner}
+          </p>
+        )}
+        {error && (
+          <p className="error-box" role="alert">
+            {error}
+          </p>
+        )}
+
+        {/* Stays mounted so the conversation survives switching tabs. */}
+        <div hidden={tab !== "ask"}>
+          <AssistantTab />
+        </div>
+
+        {tab === "lab" && (
+          <LabTab
+            onOrdersCreated={() => {
+              void refresh();
+              setTab("overview");
+            }}
+          />
+        )}
+
+        {tab === "analytics" && <AnalyticsTab />}
+
+        {tab === "overview" && (
           <>
-            <div className="scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Item</th>
-                    <th>Supplier</th>
-                    <th>Quantity</th>
-                    <th>Total</th>
-                    <th>Status</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.map((o) => (
-                    <tr key={o.id}>
-                      <td>{o.id}</td>
-                      <td>{o.item}</td>
-                      <td>{o.supplier_name}</td>
-                      <td>{o.qty}</td>
-                      <td>{money(o.total)}</td>
-                      <td>
-                        <span className="badge status">{o.status}</span>
-                      </td>
-                      <td>
-                        {o.status === "PENDING_APPROVAL" && (
-                          <>
-                            <button onClick={() => orderAction(o.id, "approve")}>
-                              Approve
-                            </button>
-                            <button onClick={() => orderAction(o.id, "reject")}>
-                              Reject
-                            </button>
-                          </>
-                        )}
-                        {o.status === "APPROVED" && (
-                          <button onClick={() => payOrder(o.id)}>
-                            Pay with PayPal
-                          </button>
-                        )}
-                        {o.status === "PAYMENT_STARTED" && (
-                          <span className="note">Waiting for buyer approval</span>
-                        )}
-                        {o.status === "AUTHORIZED" && (
-                          <button onClick={() => confirmDelivery(o.id)}>
-                            Confirm delivery
-                          </button>
-                        )}
-                        {o.status === "DELIVERED_CAPTURED" && (
-                          <span className="note">Delivered and paid</span>
-                        )}
-                        <button
-                          onClick={() => setOpenOrder(openOrder === o.id ? null : o.id)}
-                        >
-                          {openOrder === o.id ? "Hide timeline" : "Timeline"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {loading && !error && <p className="empty">Loading inventory…</p>}
 
-            {timelineOrder && (
-              <div className="timeline">
-                <h3>Order {timelineOrder.id} timeline</h3>
-                <ol>
-                  {timelineOrder.timeline.map((e, i) => (
-                    <li key={i}>
-                      <strong>{e.type}</strong> {e.detail}
-                      <span className="note">
-                        {" "}
-                        {new Date(e.time).toLocaleTimeString()}
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-              </div>
+            {dashboard && (
+              <>
+                <SummaryStrip summary={dashboard.summary} />
+                <NeedsAttention alerts={dashboard.attention} items={items} busy={busy} onReview={reviewReorder} />
+                <InventoryTable items={items} busy={busy} onReview={reviewReorder} />
+              </>
+            )}
+
+            {selected && (
+              <ReviewPanel
+                item={selected}
+                rec={rec}
+                loading={recLoading}
+                error={recError}
+                message={reviewMsg}
+                blocked={
+                  selectedOrder
+                    ? `Order ${selectedOrder.id} for this item is already in progress. Finish or reject it before creating another.`
+                    : null
+                }
+                onCreateOrder={createOrder}
+              />
+            )}
+
+            {dashboard && (
+              <OrdersPanel
+                orders={orders}
+                message={orderMsg}
+                openOrder={openOrder}
+                onToggleTimeline={(id) => setOpenOrder(openOrder === id ? null : id)}
+                onApprove={(id) => void orderStep(`/orders/${id}/approve`)}
+                onReject={(id) => void orderStep(`/orders/${id}/reject`)}
+                onPay={(id) => void payOrder(id)}
+                onRestart={(id) => void orderStep(`/orders/${id}/restart-payment`)}
+                onConfirm={(order) => void confirmDelivery(order)}
+              />
             )}
           </>
         )}
-      </section>
-      <p className="footer">
-        <button onClick={resetDemo}>Reset demo</button>
-      </p>
-    </main>
+      </main>
+    </div>
   );
 }

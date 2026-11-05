@@ -1,7 +1,18 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
-from app.orders import Order, Status, approve, reject, start_payment, authorization_state, mark_authorized, mark_delivered
-from datetime import datetime, timedelta, timezone
+from app.orders import (
+    Order,
+    Status,
+    approve,
+    authorization_state,
+    mark_authorized,
+    mark_delivered,
+    reject,
+    restart_payment,
+    start_payment,
+)
 
 
 def make_order():
@@ -33,6 +44,7 @@ def test_cannot_approve_rejected_order():
     with pytest.raises(ValueError):
         approve(order)
 
+
 def test_start_payment_on_approved_order():
     order = start_payment(approve(make_order()), "PP123")
     assert order.status == Status.PAYMENT_STARTED
@@ -42,6 +54,7 @@ def test_start_payment_on_approved_order():
 def test_cannot_pay_for_unapproved_order():
     with pytest.raises(ValueError):
         start_payment(make_order(), "PP123")
+
 
 def test_mark_authorized_after_payment_started():
     order = start_payment(approve(make_order()), "PP123")
@@ -53,6 +66,7 @@ def test_mark_authorized_after_payment_started():
 def test_cannot_authorize_before_payment_started():
     with pytest.raises(ValueError):
         mark_authorized(approve(make_order()), "AUTH1")
+
 
 def make_authorized_order():
     order = start_payment(approve(make_order()), "PP123")
@@ -68,6 +82,7 @@ def test_mark_delivered_after_authorized():
 def test_cannot_deliver_before_authorized():
     with pytest.raises(ValueError):
         mark_delivered(approve(make_order()), "CAP1")
+
 
 def test_new_order_has_created_event():
     order = make_order()
@@ -100,6 +115,7 @@ def test_events_have_timestamps():
     order = approve(make_order())
     assert all("T" in e["time"] for e in order.timeline)
 
+
 def days_ago(days):
     return datetime.now(timezone.utc) - timedelta(days=days)
 
@@ -128,3 +144,21 @@ def test_authorization_expired():
     order = start_payment(approve(make_order()), "PP1")
     mark_authorized(order, "A1", now=days_ago(30))
     assert authorization_state(order) == "expired"
+
+
+def test_restart_payment_returns_to_approved():
+    order = start_payment(approve(make_order()), "PP123")
+    restart_payment(order)
+    assert order.status == Status.APPROVED
+    assert order.paypal_order_id is None
+    assert order.timeline[-1]["type"] == "PAYMENT_RESTARTED"
+
+
+def test_cannot_restart_payment_unless_it_was_started():
+    with pytest.raises(ValueError):
+        restart_payment(approve(make_order()))
+
+
+def test_cannot_restart_payment_once_authorized():
+    with pytest.raises(ValueError):
+        restart_payment(make_authorized_order())

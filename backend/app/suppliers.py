@@ -8,7 +8,10 @@ class Supplier:
     lead_time_days: float
     approved: bool = True
     stock_available: int | None = None  # None = no limit known
-    reliability: float = 0.9            # share of deliveries that arrive on time
+    reliability: float | None = None    # share of on-time deliveries; None = unknown
+    min_order_qty: int = 1
+    delivery_fee: float = 0.0
+    history_count: int = 0              # deliveries on record behind the reliability
 
 
 def arrives_in_time(supplier: Supplier, days_of_stock_left: float | None) -> bool:
