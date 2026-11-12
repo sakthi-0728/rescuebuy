@@ -1,298 +1,138 @@
-\# RescueBuy
+# RescueBuy
 
+**An AI procurement assistant for small businesses. PayPal holds the money when the owner approves an order, and charges it only when the owner confirms the delivery.**
 
+Built for the PayPal AI Hackathon with the PayPal sandbox (Orders API v2, authorize then capture), Google Gemini and AG Grid.
 
-\*\*An AI assistant that reorders stock for small businesses, but only pays when the goods actually arrive.\*\*
+**Demo video:** https://youtu.be/JueOCtDYb3Y
 
+> AI proposes, rules validate, the owner approves, PayPal reserves the money, and it is captured only when the owner confirms delivery.
 
+## The problem
 
-Built for the PayPal AI Hackathon with the PayPal sandbox (Orders API: authorize, then capture) and Google Gemini.
+Small shops lose money in two ways. They run out of stock before a delivery arrives, or they over-order and tie up cash on the shelf. Owners have no time to watch every item, and most would not let an AI spend their money unsupervised.
 
+RescueBuy does the watching and comparing, and leaves every payment decision with the owner.
 
+## What it does
 
-Demo video: \_add YouTube link here\_
+|Page|What it is for|
+|-|-|
+|**Overview**|A daily briefing of what needs attention. Each item has a runway bar: the bar is days of stock left, the tick is the fastest delivery.|
+|**Reorder review**|Compares suppliers on total cost, delivery time and reliability. Suppliers that break a rule (too late, over budget, not approved) are listed with the reason.|
+|**Orders**|Every order moves through four steps: Proposed, Approved, Funds reserved, Delivered and paid. A ledger shows what is reserved at PayPal, what is charged, and the item's stock.|
+|**Decision Lab**|Compares four buying strategies against the budget. A stress test lets you delay a supplier, switch one off, or raise demand, and the strategies recalculate.|
+|**Analytics**|Budget, spending, excess stock, savings from comparing suppliers, and a ledger of every purchase behind the numbers.|
+|**Ask Rescue AI**|Answers questions in plain English from the shop's own data. It is read-only and can never place, approve or pay for an order.|
 
+Every order also stores a **decision record**: who chose the supplier (Gemini, the rules, the owner or a Decision Lab strategy), which suppliers were rejected and why, and the assumptions used.
 
+## How PayPal is used
 
-\## The idea
+1. The owner approves an order in RescueBuy.
+2. **Pay with PayPal** creates a PayPal order with `intent=AUTHORIZE`. The amount comes from the server, never from the browser.
+3. The buyer approves in the PayPal sandbox, and the backend authorizes the order. The money is reserved, not charged.
+4. When the owner confirms delivery, the backend captures the authorization.
+5. Only if PayPal reports the capture as `COMPLETED` does the app mark the order delivered, add the quantity to stock and record the spending, in one database transaction. A failed capture changes nothing and can be retried.
 
+PayPal tools used: OAuth 2.0 client credentials, Orders API v2 (create and authorize), Payments API v2 (capture), webhook signature verification, and sandbox business and personal accounts.
 
+## How AI is used
 
-Small shops run out of stock because nobody has time to watch every item. RescueBuy watches inventory, predicts when something will run out, compares suppliers, and proposes an order. The owner approves it, PayPal reserves the money, and the money is only taken when delivery is confirmed. Stock goes up at delivery, not at payment.
+Google Gemini (`gemini-2.5-flash` by default, through the `google-genai` SDK):
 
+* **Recommends a supplier** among the ones that already passed the rules, and explains why.
+* **Explains the trade-offs** between Decision Lab strategies. Python calculates all the numbers.
+* **Routes questions** in Ask Rescue AI to one of ten read-only lookups.
+* **Words answers**, behind a guard that rejects any wording with a number the backend did not calculate, or that claims an action was taken.
 
+Every Gemini call has a non-AI fallback, so the app works without a Gemini key.
 
-\*\*AI proposes, rules validate, human approves, PayPal pays.\*\*
+## Tech stack
 
+|Part|Technology|
+|-|-|
+|Backend|Python, FastAPI, SQLite|
+|Frontend|React, TypeScript, Vite|
+|Tables|AG Grid Community 36 (inventory board, stress-test grid, strategy matrix, purchase ledger)|
+|Payments|PayPal sandbox, Orders API v2|
+|AI|Google Gemini API|
+|Tests|pytest, 440 tests, with PayPal and Gemini replaced by fakes|
 
+## Run it locally
 
-\## How it works
+**You need:** Python 3.10 or newer, Node.js 20 or newer, a free PayPal developer account and (optionally) a free Gemini API key.
 
+### 1\. PayPal sandbox
 
+1. Log in at https://developer.paypal.com and open **Apps \& Credentials** with **Sandbox** selected.
+2. Create a **Merchant** app and copy its Client ID and Secret.
+3. Under **Testing Tools > Sandbox Accounts**, use one **Business** and one **Personal** account, both set to **United States**. The app charges in USD, and India-based sandbox accounts rejected USD payments during development.
 
-1\. \*\*Watch stock.\*\* Days left = (stock + incoming) / daily usage, with a risk badge (ok, warning, critical).
-
-2\. \*\*Build options.\*\* Each supplier that is approved, arrives before stock runs out, can fill the order, and passes the budget rules becomes an option with its own quantity and total cost.
-
-3\. \*\*Gemini chooses.\*\* Gemini picks one option and explains the trade-offs. Code checks the pick is on the list of valid options. If Gemini is unavailable or picks something invalid, the app falls back to the lowest total cost.
-
-4\. \*\*Owner approves.\*\* Orders above the auto-approve limit need the owner's approval. Orders above the budget are blocked.
-
-5\. \*\*PayPal reserves the money.\*\* The order is created with `intent=AUTHORIZE`. The buyer approves it in the PayPal sandbox, and the app authorizes it. Funds are held, not charged.
-
-6\. \*\*Delivery is confirmed.\*\* Only then does the app capture the payment and add the quantity to stock.
-
-
-
-\### Where the AI is, and where it is not
-
-
-
-All numbers (days left, reorder quantity, totals, rule checks) come from plain, tested Python. Gemini only chooses among options that already passed the rules and explains the result. It cannot change a number or pick a supplier that breaks a rule.
-
-
-
-\### PayPal safety details
-
-
-
-\- Authorize now, capture later, so money moves only after delivery.
-
-\- Idempotency keys (`PayPal-Request-Id`) on create, authorize and capture, so retries are safe.
-
-\- Authorization expiry handling: the honor period and validity window are the constants `HONOR\_DAYS` and `VALID\_DAYS` in `backend/app/orders.py`. An expired authorization is blocked before PayPal is called, and an old one shows a clear warning if the capture fails.
-
-\- A failed capture leaves the order `AUTHORIZED` and the stock unchanged, so it can be retried.
-
-\- Each order keeps its own timeline (created, approved, payment started, authorized, delivered, stock updated).
-
-
-
-\## Tech stack
-
-
-
-| Part | Technology |
-
-|---|---|
-
-| Backend | Python, FastAPI |
-
-| Dashboard | React, TypeScript (Vite) |
-
-| Payments | PayPal sandbox (Orders API, authorize and capture) |
-
-| AI | Google Gemini API |
-
-| Tests | pytest (131 tests; PayPal and Gemini are mocked) |
-
-
-
-\## Run it locally
-
-
-
-\*\*You need:\*\* Python 3.10 or newer, Node.js 20 or newer, a free PayPal developer account, and a free Gemini API key. Developed and tested on Python 3.15 and Node 24 on Windows.
-
-
-
-\### 1. PayPal sandbox setup
-
-
-
-1\. Log in at https://developer.paypal.com and open \*\*Apps \& Credentials\*\* with the \*\*Sandbox\*\* toggle on.
-
-2\. Create an app of type \*\*Merchant\*\* and copy its Client ID and Secret.
-
-3\. In \*\*Testing Tools > Sandbox Accounts\*\*, use a \*\*Business\*\* and a \*\*Personal\*\* account. Make both \*\*United States\*\* accounts. We hit a "seller doesn't accept payments in your currency" error with India-based sandbox accounts.
-
-
-
-\### 2. Backend
-
-
+### 2\. Backend
 
 ```bash
-
 cd backend
-
 python -m venv .venv
-
-\# Windows: .venv\\Scripts\\activate      Mac/Linux: source .venv/bin/activate
-
+# Windows: .venv\\Scripts\\activate      Mac/Linux: source .venv/bin/activate
 python -m pip install -r requirements.txt
-
 ```
 
-
-
-Copy `.env.example` to `.env` and fill in your values:
-
-
-
-```
-
-PAYPAL\_CLIENT\_ID=your\_sandbox\_client\_id
-
-PAYPAL\_CLIENT\_SECRET=your\_sandbox\_secret
-
-PAYPAL\_BASE\_URL=https://api-m.sandbox.paypal.com
-
-GEMINI\_API\_KEY=your\_gemini\_api\_key
-
-GEMINI\_MODEL=gemini-2.5-flash
-
-```
-
-
-
-`GEMINI\_MODEL` is configurable because model names change. If you get a "not found" error, set a current model name from https://aistudio.google.com.
-
-
-
-Start the API:
-
-
+Copy `.env.example` to `.env`, fill in your keys, then start it:
 
 ```bash
-
 python -m uvicorn app.main:app --reload
-
 ```
 
+The API runs at http://127.0.0.1:8000. The database `rescuebuy.db` is created with demo data on first start.
 
-
-The API runs at http://127.0.0.1:8000 (interactive docs at `/docs`).
-
-
-
-\### 3. Dashboard
-
-
-
-In a second terminal:
-
-
+### 3\. Frontend
 
 ```bash
-
 cd frontend
-
 npm install
-
 npm run dev
-
 ```
 
+Open http://localhost:5173 (use `localhost`, not `127.0.0.1`).
 
+### 4\. Try the flow from the video
 
-Open http://localhost:5173 (use `localhost`, not `127.0.0.1`; the backend only allows that origin).
+1. **Overview** names Butter as the most urgent item. Click **Review Butter**.
+2. The review recommends a supplier and lists the rejected one with its reason. Click **Create order**.
+3. On **Orders**, click **Approve order**, then **Pay with PayPal**, and pay with your sandbox Personal account.
+4. Back in the app, the ledger shows the amount reserved and $0.00 charged. Stock is unchanged.
+5. Click **Confirm delivery**. The payment is captured and the stock goes up.
+6. Try the **Decision Lab** stress test, **Analytics** and **Ask Rescue AI**.
 
-
-
-\### 4. Try the demo flow
-
-
-
-1\. Click \*\*Get recommendation\*\* on \*\*boxes\*\*. Gemini compares the suppliers and picks one.
-
-2\. Click \*\*Create order\*\* on a supplier, then \*\*Approve\*\*.
-
-3\. Click \*\*Pay with PayPal\*\* and log in with your sandbox \*\*Personal\*\* account. Click \*\*Pay Now\*\*.
-
-4\. Back on the dashboard, boxes still show \*\*600\*\*. The money is reserved, nothing has arrived.
-
-5\. Click \*\*Confirm delivery\*\*. The payment is captured and boxes go to \*\*1000\*\*.
-
-6\. Click \*\*Timeline\*\* to see the order history.
-
-7\. \*\*Reset demo\*\* clears orders and restores stock so you can run it again.
-
-
-
-Orders and stock are held in memory and reset when the backend restarts. Don't save a backend file while demoing, because `--reload` restarts the server.
-
-
-
-\### Run the tests
-
-
+### Run the tests
 
 ```bash
-
 cd backend
-
-python -m pytest -v
-
+python -m pytest -q
 ```
 
+## Honest limits
 
+* **Sandbox and demo data.** Payments run in the PayPal sandbox. The bakery inventory, suppliers, delivery history and earlier spending are sample data, and the app labels them as demo data.
+* **Delivery is confirmed by the owner.** The app does not independently verify that goods arrived.
+* **Webhooks.** The receiver, with signature verification and duplicate protection, is built and unit-tested, but it has never received a live PayPal event because the demo runs without a public URL. The payment flow does not depend on it.
+* **Tests use fakes** for PayPal and Gemini. The sandbox flow was exercised by hand.
+* **Estimates, not guarantees.** Days-left figures, the Decision Lab, the stress test and savings are estimates from the usage on record.
+* **The AI guard checks numbers, not meaning.** It rejects invented numbers and claimed actions, but cannot tell whether a correct number was attached to the right item.
+* **Authorizations expire.** Captures are blocked after 29 days. Re-authorization is not implemented.
+* **Single business, no sign-in, USD only.**
+* **AG Grid Community only.** AG Studio, AG Charts and Enterprise features are not used.
 
-No API keys are needed. PayPal and Gemini are replaced with fakes in the tests.
+## AI assistance
 
+Gemini runs inside the product. Claude (Anthropic) was used as a coding assistant during development. The opening animation in the demo video is an AI-generated illustration, and the rest of the video is a live recording of the app.
 
+## Roadmap
 
-\### Without a Gemini key
+Live webhooks on a hosted backend, re-authorization for late deliveries, partial capture for partial deliveries, real supplier data, multiple currencies and user accounts.
 
+## License
 
-
-The app still works. It falls back to the lowest total cost and a plain-sentence explanation, and the dashboard labels this "AI unavailable". PayPal credentials are required for the payment steps.
-
-
-
-\## Project layout
-
-
-
-```
-
-backend/app/
-
-&#x20; forecast.py    days left, risk level, reorder quantity
-
-&#x20; suppliers.py   supplier eligibility
-
-&#x20; policy.py      budget and approval rules
-
-&#x20; compare.py     options, AI choice with fallback
-
-&#x20; ai.py          Gemini: choose supplier, explain
-
-&#x20; orders.py      order state machine, timeline, expiry
-
-&#x20; paypal.py      PayPal client (token, create, authorize, capture, webhook check)
-
-&#x20; main.py        FastAPI routes
-
-backend/tests/   pytest suite
-
-frontend/        React + TypeScript dashboard
-
-```
-
-
-
-\## Scope and roadmap
-
-
-
-Left out on purpose to keep the first version finishable:
-
-
-
-\- \*\*Webhooks:\*\* the receiver, signature verification and duplicate protection are implemented and unit-tested with a fake PayPal, but it has not received a real PayPal event, because that needs a public URL. The payment flow does not depend on it.
-
-\- \*\*Payouts and Invoicing APIs:\*\* RescueBuy pays through checkout, so it does not need them yet.
-
-\- Real POS integrations, multiple payment providers, a database (storage is in memory), ML demand forecasting, and unattended supplier payments.
-
-\- Next ideas: read a delivery note photo with Gemini and capture only the quantity that arrived.
-
-
-
-\## License
-
-
-
-MIT. See \[LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 

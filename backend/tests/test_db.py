@@ -142,6 +142,22 @@ def test_no_purchase_is_dated_in_the_future():
     assert latest <= date.today().isoformat()
 
 
+@pytest.mark.parametrize("day", [1, 2, 9, 15, 27, 28])
+def test_this_months_demo_purchases_are_never_future_or_identical_rows(day):
+    """Early in the month, purchases are spread over the days so far, not piled onto one date."""
+    from datetime import date
+
+    today = date(2026, 11, day)
+    with db.connect() as conn:
+        conn.execute("DELETE FROM purchases")
+        db._seed_purchases(conn, today)
+        rows = [p for p in db.load_purchases(conn) if p["purchased_on"].startswith("2026-11")]
+    assert rows and max(p["purchased_on"] for p in rows) <= today.isoformat()
+    if day >= 9:
+        keys = [(p["item"], p["purchased_on"]) for p in rows]
+        assert len(keys) == len(set(keys)), "the same item should not be bought twice on one date"
+
+
 def test_a_real_purchase_is_recorded_with_its_category():
     with db.connect() as conn:
         db.record_purchase(conn, "Butter", "FreshMart", 36, 259.8)
@@ -159,3 +175,27 @@ def test_reset_drops_real_purchases_and_restores_the_demo_history():
         purchases = db.load_purchases(conn)
     assert len(purchases) == 72
     assert all(p["is_demo"] for p in purchases)
+
+
+def test_create_order_keeps_the_decision_record_on_the_first_event():
+    with db.connect() as conn:
+        order = db.create_order(conn, "Flour", "FreshMart", 50, 62.5, record={"reason": "test"})
+        again = db.get_order(conn, order.id)
+    assert again.timeline[0]["type"] == "ORDER_CREATED"
+    assert again.timeline[0]["record"] == {"reason": "test"}
+
+
+def test_create_order_without_a_record_adds_none():
+    with db.connect() as conn:
+        order = db.create_order(conn, "Flour", "FreshMart", 50, 62.5)
+    assert "record" not in order.timeline[0]
+
+
+def test_events_are_found_by_resource_id_and_ignore_empty_ids():
+    with db.connect() as conn:
+        db.record_webhook_event(conn, "WH-1", "A", "first", "AUTH1")
+        db.record_webhook_event(conn, "WH-2", "B", "second", "CAP1")
+        db.record_webhook_event(conn, "WH-3", "C", "no resource")
+        assert [e["id"] for e in db.events_for_resources(conn, ["AUTH1", None, ""])] == ["WH-1"]
+        assert [e["id"] for e in db.events_for_resources(conn, ["AUTH1", "CAP1"])] == ["WH-1", "WH-2"]
+        assert db.events_for_resources(conn, [None, None]) == []

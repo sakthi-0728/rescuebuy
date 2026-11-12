@@ -43,10 +43,23 @@ export type Summary = {
   budget_remaining: number;
 };
 
+export type TopAction = {
+  item: string;
+  unit: string;
+  days_left: number | null;
+  supplier: string;
+  qty: number;
+  total: number;
+  lead_time_days: number;
+  fits_budget: boolean;
+  budget_remaining: number;
+};
+
 export type Dashboard = {
   demo_data: boolean;
   summary: Summary;
   attention: Alert[];
+  top_action: TopAction | null;
 };
 
 export type Option = {
@@ -80,6 +93,47 @@ export type Recommendation = {
 
 export type TimelineEvent = { type: string; detail: string; time: string };
 
+export type DecisionConsidered = {
+  name: string;
+  qty: number;
+  unit_price: number;
+  delivery_fee: number;
+  total: number;
+  lead_time_days: number;
+  margin_days: number | null;
+  reliability: number | null;
+  deliveries_on_record: number;
+  chosen: boolean;
+};
+
+/** Why an order was proposed. Calculated and stored when the order was created. */
+export type DecisionRecord = {
+  chosen: {
+    supplier: string;
+    qty: number;
+    total: number;
+    unit_price: number;
+    delivery_fee: number;
+    lead_time_days: number;
+  };
+  chosen_by: "gemini" | "fallback" | "rules" | "owner" | "decision_lab";
+  reason: string;
+  considered: DecisionConsidered[];
+  rejected: Rejected[];
+  rules: string[];
+  assumptions: string[];
+  budget_remaining_before: number | null;
+};
+
+/** A PayPal webhook event whose signature was verified, matched to the order by PayPal id. */
+export type PaypalEvent = {
+  id: string;
+  type: string | null;
+  summary: string | null;
+  resource_id: string | null;
+  time: string;
+};
+
 export type Order = {
   id: number;
   item: string;
@@ -88,6 +142,8 @@ export type Order = {
   total: number;
   status: string;
   timeline: TimelineEvent[];
+  decision: DecisionRecord | null;
+  paypal_events: PaypalEvent[];
 };
 
 export type AnalyticsData = {
@@ -112,8 +168,17 @@ export type AnalyticsData = {
   excess: {
     threshold_days: number;
     value: number;
-    items: { item: string; unit: string; days_left: number; excess_qty: number; excess_value: number }[];
+    items: {
+      item: string;
+      unit: string;
+      stock: number;
+      unit_cost: number;
+      days_left: number;
+      excess_qty: number;
+      excess_value: number;
+    }[];
   };
+  stock_risk: { critical: string[]; low: string[] };
   savings: {
     basis: string;
     total: number;
@@ -156,12 +221,50 @@ export type Scenario = {
   over_budget: boolean;
   bought: LabLine[];
   deferred: LabDeferred[];
-  exposed: { item: string; stockout_days: number }[];
+  /** stockout_days is null when no eligible supplier is left, so there is no way to say how long. */
+  exposed: { item: string; stockout_days: number | null; reason?: "no_supplier" }[];
   savings_vs_baseline: number;
+};
+
+/** What-if inputs for the Decision Lab stress test. All read-only. */
+export type Stress = {
+  demand_change_pct: number;
+  unavailable_suppliers: string[];
+  supplier_delays: Record<string, number>;
+  active: boolean;
+};
+
+export type SupplierRow = {
+  name: string;
+  items: string[];
+  fastest_lead_days: number;
+  reliability: number | null;
+  deliveries_on_record: number;
+  delivery_fee: number;
+  only_option_for: string[];
+};
+
+export type Unfilled = {
+  item: string;
+  days_left: number | null;
+  fastest_supplier: string | null;
+  fastest_lead_days: number | null;
+};
+
+export type Purchase = {
+  item: string;
+  category: string;
+  supplier: string;
+  qty: number;
+  total: number;
+  purchased_on: string;
+  is_demo: boolean;
 };
 
 export type LabResult = {
   inputs: { budget: number; supplier_delay_days: number; wait_days: number };
+  stress: Stress;
+  unfilled: Unfilled[];
   estimate_note: string;
   baseline: string;
   scenarios: Scenario[];

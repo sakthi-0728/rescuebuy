@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import type { Alert, ItemRow } from "../types";
 import { Runway } from "./Runway";
 
@@ -8,7 +10,14 @@ type Props = {
   onReview: (item: string) => void;
 };
 
+const COLLAPSED_COUNT = 3;
+
 export function NeedsAttention({ alerts, items, busy, onReview }: Props) {
+  const [expanded, setExpanded] = useState(false);
+  // Collapsed, keep the top few plus every expiry alert: expiry is information the cards do not show in full.
+  const visible = expanded ? alerts : alerts.filter((a, i) => i < COLLAPSED_COUNT || a.kind === "expiry");
+  const hidden = alerts.length - visible.length;
+
   return (
     <section className="panel" aria-labelledby="attention-title">
       <div className="panel-head">
@@ -18,31 +27,43 @@ export function NeedsAttention({ alerts, items, busy, onReview }: Props) {
       {alerts.length === 0 ? (
         <p className="empty">Nothing needs attention. Every item has enough stock and nothing expires soon.</p>
       ) : (
-        <ul className="alerts">
-          {alerts.map((a) => {
-            const row = items.find((i) => i.item === a.item);
-            return (
-              <li key={`${a.item}-${a.kind}`} className={`alert ${a.severity}`}>
-                <span className={`sev ${a.severity}`}>{a.severity === "critical" ? "Critical" : "Warning"}</span>
-                <div className="alert-body">
-                  <strong>{a.title}</strong>
-                  <p>{a.reason}</p>
-                </div>
-                {row && a.kind === "stockout" && (
-                  <Runway days={row.days_left} lead={row.fastest_lead_time_days} risk={row.risk} />
-                )}
-                {a.action === "review_reorder" && a.open_order && (
-                  <span className="in-progress">Order {a.open_order.id} in progress</span>
-                )}
-                {a.action === "review_reorder" && !a.open_order && (
-                  <button className="primary" disabled={busy} onClick={() => onReview(a.item)}>
-                    Review reorder
-                  </button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          <ul className="alerts">
+            {visible.map((a) => {
+              const row = items.find((i) => i.item === a.item);
+              return (
+                <li key={`${a.item}-${a.kind}`} className={`alert ${a.severity}`}>
+                  <span className={`sev ${a.severity}`}>{a.severity === "critical" ? "Critical" : "Warning"}</span>
+                  <div className="alert-body">
+                    <strong>{a.title}</strong>
+                    <p>{a.reason}</p>
+                  </div>
+                  {row && a.kind === "stockout" && (
+                    <Runway days={row.days_left} lead={row.fastest_lead_time_days} risk={row.risk} />
+                  )}
+                  {a.action === "review_reorder" && a.open_order && (
+                    <span className="in-progress">Order {a.open_order.id} in progress</span>
+                  )}
+                  {a.action === "review_reorder" && !a.open_order && (
+                    <button className="primary" disabled={busy} onClick={() => onReview(a.item)}>
+                      Review reorder
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          {hidden > 0 && (
+            <button className="quiet" onClick={() => setExpanded(true)}>
+              Show {hidden} more
+            </button>
+          )}
+          {expanded && alerts.length > COLLAPSED_COUNT && (
+            <button className="quiet" onClick={() => setExpanded(false)}>
+              Show fewer
+            </button>
+          )}
+        </>
       )}
     </section>
   );

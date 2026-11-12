@@ -3,7 +3,7 @@
 Everything here is deterministic and read-only. It never creates an order, never talks
 to PayPal and never changes stock. The AI only explains the results afterwards.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.compare import Option, evaluate_suppliers
 from app.forecast import days_left as calc_days_left
@@ -73,6 +73,53 @@ class ScenarioResult:
     savings_vs_baseline: float = 0.0
 
 
+@dataclass
+class Unfilled:
+    """An at-risk item that no supplier can fill under the rules."""
+    item: str
+    days_left: float | None
+    fastest_supplier: str | None      # fastest approved supplier still offering it, if any
+    fastest_lead_days: float | None
+
+
+def apply_stress(
+    items: list[Item],
+    offers: dict[str, list[Supplier]],
+    demand_change_pct: float = 0.0,
+    unavailable: tuple[str, ...] | list[str] = (),
+) -> tuple[list[Item], dict[str, list[Supplier]]]:
+    """What-if inputs that change the plan itself: demand moves, and suppliers drop out.
+
+    Suppliers that are late are not handled here: lateness does not change which plan you would
+    make, only how it turns out, so it is applied in simulate().
+    """
+    factor = 1 + demand_change_pct / 100
+    stressed = [replace(i, daily_usage=round(i.daily_usage * factor, 4)) for i in items] if demand_change_pct else list(items)
+    gone = set(unavailable)
+    kept = {name: [s for s in sups if s.name not in gone] for name, sups in offers.items()}
+    return stressed, kept
+
+
+def unfilled_details(
+    items: list[Item], offers: dict[str, list[Supplier]], names: list[str]
+) -> list[Unfilled]:
+    by_name = {i.name: i for i in items}
+    rows = []
+    for name in names:
+        it = by_name[name]
+        approved = [s for s in offers.get(name, []) if s.approved]
+        fastest_s = min(approved, key=lambda s: s.lead_time_days, default=None)
+        rows.append(
+            Unfilled(
+                name,
+                calc_days_left(it.stock, it.incoming, it.daily_usage),
+                fastest_s.name if fastest_s else None,
+                fastest_s.lead_time_days if fastest_s else None,
+            )
+        )
+    return rows
+
+
 def priority_key(c: Candidate):
     days = c.days_left if c.days_left is not None else float("inf")
     return (RISK_RANK[c.risk], -c.criticality, days, c.item)
@@ -92,6 +139,10 @@ def build_candidates(
         days = calc_days_left(it.stock, it.incoming, it.daily_usage)
         lead = min((s.lead_time_days for s in suppliers if s.approved), default=0)
         risk = risk_level(days, lead, buffer_days)
+        if risk == "ok":
+            # Healthy by the fastest supplier's timeline: nothing to reorder now. Without this, a
+            # slow supplier with a big minimum order could turn a healthy item into a purchase.
+            continue
         options, _ = evaluate_suppliers(
             it.stock, it.incoming, it.daily_usage, suppliers, policy, buffer_days
         )
@@ -99,7 +150,7 @@ def build_candidates(
             candidates.append(
                 Candidate(it.name, it.unit, days, it.daily_usage, it.criticality, risk, options)
             )
-        elif risk != "ok":
+        else:
             unfillable.append(it.name)
     candidates.sort(key=priority_key)
     return candidates, unfillable
@@ -114,6 +165,7 @@ def fastest(c: Candidate) -> Option:
 
 
 def make_line(c: Candidate, option: Option, delay_days: float) -> Line:
+    """delay_days is the total delay for this option's supplier."""
     arrives = option.supplier.lead_time_days + delay_days
     margin = None if c.days_left is None else round(c.days_left - arrives, 1)
     gap = 0.0 if margin is None else max(0.0, -margin)
@@ -160,17 +212,39 @@ def select(key: str, candidates: list[Candidate], budget: float):
     raise ValueError(f"Unknown scenario: {key}")
 
 
+def unfilled_exposure(u: Unfilled, delay_for) -> dict:
+    """Exposure for an item nobody can fill. stockout_days is None when there is no way to say how
+    long: either no supplier is left, or the fastest one would arrive in time but is excluded by
+    your rules (minimum order, availability, budget)."""
+    days = None
+    if u.fastest_lead_days is not None and u.days_left is not None:
+        gap = u.fastest_lead_days + delay_for(u.fastest_supplier) - u.days_left
+        if gap > 0:
+            days = round(gap, 1)
+    return {"item": u.item, "stockout_days": days, "reason": "no_supplier"}
+
+
 def simulate(
     candidates: list[Candidate],
     budget: float,
     delay_days: float = 0.0,
     wait_days: float = 2.0,
+    *,
+    delays: dict[str, float] | None = None,
+    unfilled: list[Unfilled] | None = None,
 ) -> list[ScenarioResult]:
+    """delay_days applies to every supplier; delays adds extra days for named suppliers.
+    unfilled items are counted as exposed in every strategy, because no strategy can buy them."""
+    extra = delays or {}
+
+    def delay_for(supplier: str | None) -> float:
+        return delay_days + extra.get(supplier or "", 0.0)
+
     results = []
     for key, name, description in SCENARIO_DEFS:
         bought, waiting = select(key, candidates, budget)
-        lines = [make_line(c, o, delay_days) for c, o in bought]
-        deferred = [make_deferred(c, wait_days, delay_days) for c in waiting]
+        lines = [make_line(c, o, delay_for(o.supplier.name)) for c, o in bought]
+        deferred = [make_deferred(c, wait_days, delay_for(fastest(c).supplier.name)) for c in waiting]
         spend = round(sum(line.total for line in lines), 2)
         exposed = [
             {"item": line.item, "stockout_days": line.stockout_days}
@@ -180,7 +254,7 @@ def simulate(
             {"item": d.item, "stockout_days": d.stockout_days}
             for d in deferred
             if d.stockout_days > 0
-        ]
+        ] + [unfilled_exposure(u, delay_for) for u in (unfilled or [])]
         results.append(
             ScenarioResult(
                 key, name, description, spend, round(budget - spend, 2),

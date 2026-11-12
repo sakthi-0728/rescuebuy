@@ -6,7 +6,7 @@ from datetime import date
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app import db
 from app.ai import explain_recommendation, explain_scenarios
@@ -15,9 +15,12 @@ from app.analytics import (
     budget_status, excess_stock, last_months, monthly_spend, spend_by_category, spent_in_month,
 )
 from app.compare import evaluate_suppliers, option_facts, plan_order
+from app.decision import decision_record, top_action
+from app.forecast import days_left as calc_days_left
 from app.inventory import build_alerts, item_view, summarize
 from app.lab import (
-    build_candidates, cheapest, comparison_savings, recommended_key, simulate,
+    apply_stress, build_candidates, cheapest, comparison_savings, recommended_key, simulate,
+    unfilled_details,
 )
 from app.orders import (
     Order, Status, add_event, approve, authorization_state, mark_authorized,
@@ -82,6 +85,53 @@ def load_order(order_id: int) -> Order:
     return order
 
 
+def order_payload(conn, order: Order) -> dict:
+    """An order as the dashboard sees it: the order itself, the decision record that explains
+    why it was proposed, and any signature-verified PayPal webhook events for its payment."""
+    data = asdict(order)
+    decision = None
+    timeline = []
+    for event in data["timeline"]:
+        event = dict(event)
+        record = event.pop("record", None)
+        if record is not None and decision is None:
+            decision = record
+        timeline.append(event)
+    data["timeline"] = timeline
+    data["decision"] = decision
+    data["paypal_events"] = db.events_for_resources(
+        conn, [order.paypal_order_id, order.authorization_id, order.capture_id]
+    )
+    return data
+
+
+def proposal_record(
+    conn, item, supplier_name: str, chosen_by: str, reason: str | None = None,
+    *, suppliers=None, extra_assumptions: list[str] | None = None, usage_note: str | None = None,
+):
+    """The decision record for an order from one supplier, rebuilt from the same rules.
+
+    The Decision Lab passes its own (stressed) item and suppliers so the record matches the order.
+    """
+    suppliers = suppliers if suppliers is not None else db.load_offers(conn, item.name)
+    policy = db.load_policy(conn)
+    settings = db.get_settings(conn)
+    options, rejected = evaluate_suppliers(
+        item.stock, item.incoming, item.daily_usage, suppliers, policy, settings["buffer_days"]
+    )
+    chosen = next((o for o in options if o.supplier.name == supplier_name), None)
+    if chosen is None:
+        return None
+    return decision_record(
+        item=item, options=options, rejected=rejected, chosen=chosen, policy=policy,
+        buffer_days=settings["buffer_days"],
+        budget_remaining=budget_now(db.load_purchases(conn), settings)["remaining"],
+        chosen_by=chosen_by, reason=reason,
+        days_left=calc_days_left(item.stock, item.incoming, item.daily_usage),
+        extra_assumptions=extra_assumptions, usage_note=usage_note,
+    )
+
+
 def apply_transition(order_id: int, transition) -> dict:
     """Load an order, apply a state change, save it. Illegal changes become 409."""
     with db.connect() as conn:
@@ -93,7 +143,7 @@ def apply_transition(order_id: int, transition) -> dict:
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
         db.save_order(conn, order)
-    return asdict(order)
+        return order_payload(conn, order)
 
 
 @app.get("/health")
@@ -116,13 +166,28 @@ def read_dashboard():
         open_orders = db.count_open_orders(conn)
         purchases = db.load_purchases(conn)
         settings = db.get_settings(conn)
+        items, offers, policy, buffer_days = planning_inputs(conn)
     alerts = build_alerts(views)
     summary = summarize(views, alerts, open_orders)
-    summary["budget_remaining"] = budget_now(purchases, settings)["remaining"]
+    remaining = budget_now(purchases, settings)["remaining"]
+    summary["budget_remaining"] = remaining
+
+    # The next step to suggest: the most urgent stockout that has no order in progress.
+    top = None
+    first = next((a for a in alerts if a["kind"] == "stockout" and not a["open_order"]), None)
+    if first:
+        item = next(i for i in items if i.name == first["item"])
+        options, _ = evaluate_suppliers(
+            item.stock, item.incoming, item.daily_usage, offers[item.name], policy, buffer_days
+        )
+        top = top_action(
+            item=item, options=options, days_left=first["days_left"], budget_remaining=remaining
+        )
     return {
         "demo_data": True,
         "summary": summary,
         "attention": alerts,
+        "top_action": top,
     }
 
 
@@ -185,7 +250,7 @@ def create_order(req: OrderRequest):
         )
 
     if req.supplier:
-        options, _ = evaluate_suppliers(
+        options, rejected = evaluate_suppliers(
             item.stock, item.incoming, item.daily_usage, suppliers, policy, buffer_days
         )
         option = next((o for o in options if o.supplier.name == req.supplier), None)
@@ -193,6 +258,7 @@ def create_order(req: OrderRequest):
             raise HTTPException(
                 status_code=400, detail=f"{req.supplier} is not an eligible option"
             )
+        chosen_by, reason = "owner", None
     else:
         plan = plan_order(
             item.stock, item.incoming, item.daily_usage, suppliers, policy, buffer_days
@@ -200,21 +266,36 @@ def create_order(req: OrderRequest):
         if plan.choice is None:
             raise HTTPException(status_code=400, detail=plan.message)
         option = plan.choice.option
+        options, rejected = plan.options, plan.rejected
+        chosen_by, reason = plan.choice.source, plan.choice.reason
 
     with db.connect() as conn:
-        order = db.create_order(conn, item.name, option.supplier.name, option.qty, option.total)
-    return asdict(order)
+        record = decision_record(
+            item=item, options=options, rejected=rejected, chosen=option, policy=policy,
+            buffer_days=buffer_days,
+            budget_remaining=budget_now(db.load_purchases(conn), db.get_settings(conn))["remaining"],
+            chosen_by=chosen_by, reason=reason,
+            days_left=calc_days_left(item.stock, item.incoming, item.daily_usage),
+        )
+        order = db.create_order(
+            conn, item.name, option.supplier.name, option.qty, option.total, record=record
+        )
+        return order_payload(conn, order)
 
 
 @app.get("/orders")
 def list_orders():
     with db.connect() as conn:
-        return [asdict(o) for o in db.list_orders(conn)]
+        return [order_payload(conn, o) for o in db.list_orders(conn)]
 
 
 @app.get("/orders/{order_id}")
 def read_order(order_id: int):
-    return asdict(load_order(order_id))
+    with db.connect() as conn:
+        order = db.get_order(conn, order_id)
+        if order is None:
+            raise not_found("Order")
+        return order_payload(conn, order)
 
 
 @app.post("/orders/{order_id}/approve")
@@ -320,7 +401,8 @@ def confirm_delivery(order_id: int):
         db.record_purchase(conn, order.item, order.supplier_name, order.qty, order.total)
         add_event(order, "STOCK_UPDATED", f"Added {order.qty} to {order.item} stock")
         db.save_order(conn, order)
-    return {"message": "Delivery confirmed. Payment captured.", "order": asdict(order)}
+        payload = order_payload(conn, order)
+    return {"message": "Delivery confirmed. Payment captured.", "order": payload}
 
 
 # ---- Budget, analytics and the Decision Lab ----
@@ -368,6 +450,10 @@ def read_analytics(months: int = Query(default=6, ge=1, le=12)):
         },
         "excess": excess_stock(views),
         "savings": comparison_savings(candidates),
+        "stock_risk": {
+            "critical": [v["item"] for v in views if v["risk"] == "critical"],
+            "low": [v["item"] for v in views if v["risk"] == "warning"],
+        },
     }
 
 
@@ -375,33 +461,130 @@ class LabRequest(BaseModel):
     budget: float | None = Field(default=None, ge=0, le=1_000_000)
     supplier_delay_days: float = Field(default=0, ge=0, le=14)
     wait_days: float = Field(default=2, ge=0, le=14)
+    # Stress test inputs. All optional, all read-only what-ifs.
+    supplier_delays: dict[str, float] = Field(default_factory=dict)  # extra days late, per supplier
+    unavailable_suppliers: list[str] = Field(default_factory=list, max_length=20)
+    demand_change_pct: float = Field(default=0, ge=-50, le=100)
+
+    @field_validator("supplier_delays")
+    @classmethod
+    def delays_in_range(cls, value: dict[str, float]) -> dict[str, float]:
+        if len(value) > 20 or any(d < 0 or d > 14 for d in value.values()):
+            raise ValueError("Each supplier delay must be between 0 and 14 days")
+        return value
 
 
 class LabOrdersRequest(LabRequest):
     scenario: str
 
 
-def run_lab(req: LabRequest):
+class LabRun:
+    """One Decision Lab run: the inputs after stress, and what the simulation found."""
+
+    def __init__(self, req: LabRequest, budget, results, unfilled, items, offers):
+        self.req, self.budget, self.results = req, budget, results
+        self.unfilled, self.items, self.offers = unfilled, items, offers
+
+    @property
+    def stress(self) -> dict:
+        delays = {k: v for k, v in self.req.supplier_delays.items() if v}
+        return {
+            "demand_change_pct": self.req.demand_change_pct,
+            "unavailable_suppliers": sorted(set(self.req.unavailable_suppliers)),
+            "supplier_delays": delays,
+            "active": bool(self.req.demand_change_pct or self.req.unavailable_suppliers or delays),
+        }
+
+    def assumption_lines(self) -> list[str]:
+        """Plain sentences for decision records, so an order shows the what-if it came from."""
+        s, lines = self.stress, []
+        if s["demand_change_pct"]:
+            lines.append(f"Stress test: demand {s['demand_change_pct']:+g}% on the usual usage.")
+        if s["unavailable_suppliers"]:
+            lines.append("Stress test: suppliers switched off: " + ", ".join(s["unavailable_suppliers"]) + ".")
+        if s["supplier_delays"]:
+            lines.append(
+                "Stress test: "
+                + ", ".join(
+                    f"{k} delivers {v:g} {'day' if v == 1 else 'days'} late" for k, v in sorted(s["supplier_delays"].items())
+                )
+                + "."
+            )
+        if self.req.supplier_delay_days:
+            lines.append(f"Stress test: every supplier {self.req.supplier_delay_days:g} days late.")
+        return lines
+
+    @property
+    def usage_note(self) -> str | None:
+        """How to describe the usage figure in a record: stressed usage is not the recorded average."""
+        pct = self.stress["demand_change_pct"]
+        return f"the average on record {pct:+g}% for the stress test" if pct else None
+
+
+def run_lab(req: LabRequest) -> LabRun:
     with db.connect() as conn:
         settings = db.get_settings(conn)
         purchases = db.load_purchases(conn)
         items, offers, policy, buffer_days = planning_inputs(conn)
     budget = req.budget if req.budget is not None else max(0.0, budget_now(purchases, settings)["remaining"])
+    items, offers = apply_stress(items, offers, req.demand_change_pct, req.unavailable_suppliers)
     candidates, unfillable = build_candidates(items, offers, policy, buffer_days)
-    results = simulate(candidates, budget, req.supplier_delay_days, req.wait_days)
-    return budget, results, unfillable
+    unfilled = unfilled_details(items, offers, unfillable)
+    results = simulate(
+        candidates, budget, req.supplier_delay_days, req.wait_days,
+        delays=req.supplier_delays, unfilled=unfilled,
+    )
+    return LabRun(req, budget, results, unfilled, items, offers)
+
+
+@app.get("/lab/suppliers")
+def lab_suppliers():
+    """The approved suppliers, for the stress-test grid. 'only_option_for' lists items that need a
+    reorder now and have no other eligible supplier, which is where a failure would hurt."""
+    with db.connect() as conn:
+        items, offers, policy, buffer_days = planning_inputs(conn)
+    candidates, _ = build_candidates(items, offers, policy, buffer_days)
+    sole: dict[str, list[str]] = {}
+    for c in candidates:
+        if len(c.options) == 1:
+            sole.setdefault(c.options[0].supplier.name, []).append(c.item)
+
+    rows: dict[str, dict] = {}
+    for item_name, sups in offers.items():
+        for s in sups:
+            if not s.approved:
+                continue
+            row = rows.setdefault(
+                s.name,
+                {
+                    "name": s.name,
+                    "items": [],
+                    "fastest_lead_days": s.lead_time_days,
+                    "reliability": s.reliability,
+                    "deliveries_on_record": s.history_count,
+                    "delivery_fee": s.delivery_fee,
+                },
+            )
+            row["items"].append(item_name)
+            row["fastest_lead_days"] = min(row["fastest_lead_days"], s.lead_time_days)
+    out = sorted(rows.values(), key=lambda r: r["name"])
+    for r in out:
+        r["only_option_for"] = sole.get(r["name"], [])
+    return {"demo_data": True, "suppliers": out}
 
 
 @app.post("/lab/simulate")
 def lab_simulate(req: LabRequest):
     """Read-only: nothing is ordered, charged or changed."""
-    budget, results, unfillable = run_lab(req)
+    run = run_lab(req)
+    results = run.results
     recommended = recommended_key(results)
     facts = {
-        "budget": budget,
+        "budget": run.budget,
         "supplier_delay_days": req.supplier_delay_days,
         "wait_days": req.wait_days,
         "recommended": recommended,
+        "stress": run.stress,
         "scenarios": [
             {
                 "key": r.key,
@@ -418,15 +601,17 @@ def lab_simulate(req: LabRequest):
     }
     return {
         "inputs": {
-            "budget": budget,
+            "budget": run.budget,
             "supplier_delay_days": req.supplier_delay_days,
             "wait_days": req.wait_days,
         },
+        "stress": run.stress,
         "estimate_note": "Estimates based on current usage and supplier lead times, not guarantees.",
         "baseline": "Savings compare each strategy with buying everything now from the fastest suppliers.",
         "scenarios": [asdict(r) for r in results],
         "recommended": recommended,
-        "unfillable": unfillable,
+        "unfillable": [u.item for u in run.unfilled],
+        "unfilled": [asdict(u) for u in run.unfilled],
         "explanation": explain_scenarios(facts),
     }
 
@@ -434,13 +619,14 @@ def lab_simulate(req: LabRequest):
 @app.post("/lab/orders")
 def lab_create_orders(req: LabOrdersRequest):
     """Turn a scenario into proposed orders. They still wait for the owner's approval."""
-    _, results, _ = run_lab(req)
-    scenario = next((r for r in results if r.key == req.scenario), None)
+    run = run_lab(req)
+    scenario = next((r for r in run.results if r.key == req.scenario), None)
     if scenario is None:
         raise HTTPException(status_code=400, detail=f"Unknown scenario: {req.scenario}")
     if not scenario.bought:
         raise HTTPException(status_code=400, detail="This scenario buys nothing today.")
 
+    stressed = {i.name: i for i in run.items}
     created, skipped = [], []
     with db.connect() as conn:
         for line in scenario.bought:
@@ -448,9 +634,24 @@ def lab_create_orders(req: LabOrdersRequest):
             if existing:
                 skipped.append({"item": line.item, "reason": f"Order {existing.id} is already in progress"})
                 continue
-            order = db.create_order(conn, line.item, line.supplier, line.qty, line.total)
-            created.append(asdict(order))
+            record = proposal_record(
+                conn, stressed[line.item], line.supplier, "decision_lab",
+                f'Created from the Decision Lab strategy "{scenario.name}".',
+                suppliers=run.offers[line.item], extra_assumptions=run.assumption_lines(),
+                usage_note=run.usage_note,
+            )
+            order = db.create_order(
+                conn, line.item, line.supplier, line.qty, line.total, record=record
+            )
+            created.append(order_payload(conn, order))
     return {"scenario": scenario.name, "created": created, "skipped": skipped}
+
+
+@app.get("/purchases")
+def read_purchases():
+    """Every purchase behind the spending figures, with its source, so any number can be traced."""
+    with db.connect() as conn:
+        return {"demo_data": True, "purchases": db.load_purchases(conn)}
 
 
 # ---- Ask Rescue AI ----
@@ -487,9 +688,16 @@ async def paypal_webhook(request: Request):
     if not verified:
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
+    resource = event.get("resource")
+    resource_id = resource.get("id") if isinstance(resource, dict) else None
+    if not isinstance(resource_id, str):
+        resource_id = None
+
+    # Only signature-verified events are stored. The resource id (order, authorization or capture)
+    # lets an order show the events that belong to it. An event never changes an order by itself.
     with db.connect() as conn:
         is_new = db.record_webhook_event(
-            conn, event["id"], event.get("event_type"), event.get("summary")
+            conn, event["id"], event.get("event_type"), event.get("summary"), resource_id
         )
     return {"status": "received" if is_new else "duplicate"}
 

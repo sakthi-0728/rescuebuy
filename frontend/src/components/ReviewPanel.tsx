@@ -1,12 +1,12 @@
 import type { Option, Recommendation } from "../types";
 import { daysText, deliveriesText, money } from "../format";
+import { Skeleton } from "./Skeleton";
 
 type Props = {
   item: string;
   rec: Recommendation | null;
   loading: boolean;
   error: string | null;
-  message: string | null;
   blocked: string | null;
   onCreateOrder: (supplier: string) => void;
 };
@@ -38,21 +38,22 @@ function Reliability({ option }: { option: Option }) {
   );
 }
 
-export function ReviewPanel({ item, rec, loading, error, message, blocked, onCreateOrder }: Props) {
+export function ReviewPanel({ item, rec, loading, error, blocked, onCreateOrder }: Props) {
   return (
     <section className="panel" id="review" aria-labelledby="review-title" aria-busy={loading}>
       <div className="panel-head">
         <h2 id="review-title">Reorder review: {item}</h2>
       </div>
-      {loading && <p className="empty">Comparing suppliers…</p>}
+      {loading && (
+        <div className="skeleton-stack" role="status" aria-label="Comparing suppliers">
+          <Skeleton height={16} width="70%" />
+          <Skeleton height={64} />
+          <Skeleton height={64} />
+        </div>
+      )}
       {error && (
         <p className="error-box" role="alert">
           {error}
-        </p>
-      )}
-      {message && (
-        <p className="banner" role="status">
-          {message}
         </p>
       )}
       {rec && (

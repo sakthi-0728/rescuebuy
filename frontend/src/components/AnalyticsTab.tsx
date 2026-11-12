@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { get, messageOf } from "../api";
 import { money, moneyShort, monthLabel, monthTitle, plural } from "../format";
 import type { AnalyticsData } from "../types";
+import { LedgerGrid } from "./LedgerGrid";
+import { SkeletonPanel } from "./Skeleton";
 
 function Body({ months }: { months: number }) {
   const [data, setData] = useState<AnalyticsData | null>(null);
@@ -29,16 +31,67 @@ function Body({ months }: { months: number }) {
       </p>
     );
   }
-  if (!data) return <p className="empty">Loading analytics…</p>;
+  if (!data) {
+    return (
+      <>
+        <SkeletonPanel lines={4} label="Loading analytics" />
+        <SkeletonPanel lines={5} label="Loading chart" />
+      </>
+    );
+  }
 
   const b = data.budget;
   const maxMonth = Math.max(1, ...data.monthly_spend.map((m) => m.total));
   const categoryTotal = data.by_category.reduce((sum, c) => sum + c.total, 0);
   const maxCategory = Math.max(1, ...data.by_category.map((c) => c.total));
   const meterTone = b.over_budget ? "critical" : b.used_pct >= 80 ? "warning" : "ok";
+  const criticalItems = data.stock_risk.critical;
+  const biggestExcess = data.excess.items[0];
 
   return (
     <>
+      <div className="tiles insights" role="group" aria-label="Key figures">
+        <div className="tile">
+          <span className="tile-label">Potential savings</span>
+          <span className="tile-value">{money(data.savings.total)}</span>
+          <span className="tile-sub">Best supplier vs costliest eligible, on current reorders. An estimate.</span>
+        </div>
+        <div className={`tile ${data.excess.value > 0 ? "warning" : ""}`}>
+          <span className="tile-label">Cash in excess stock</span>
+          <span className="tile-value">{money(data.excess.value)}</span>
+          <span className="tile-sub">
+            {data.excess.items.length === 0
+              ? `Nothing above ${data.excess.threshold_days} days of use.`
+              : `${plural(data.excess.items.length, "item")} above ${data.excess.threshold_days} days of use.`}
+          </span>
+        </div>
+        <div className={`tile ${criticalItems.length > 0 ? "critical" : ""}`}>
+          <span className="tile-label">Stockout risk</span>
+          <span className="tile-value">{criticalItems.length}</span>
+          <span className="tile-sub">
+            {criticalItems.length === 0
+              ? "No item is critical right now."
+              : `Critical: ${criticalItems.join(", ")}.${
+                  data.stock_risk.low.length > 0 ? ` ${data.stock_risk.low.length} more running low.` : ""
+                }`}
+          </span>
+        </div>
+        <div className={`tile ${b.remaining < 0 ? "critical" : ""}`}>
+          <span className="tile-label">Budget left</span>
+          <span className="tile-value">{money(b.remaining)}</span>
+          <span className="tile-sub">{monthTitle(b.month)}. {b.used_pct}% of {money(b.monthly)} used.</span>
+        </div>
+      </div>
+
+      {biggestExcess && (
+        <p className="insight-note">
+          <strong>What stands out.</strong> {money(biggestExcess.excess_value)} is tied up in extra{" "}
+          {biggestExcess.item}: {biggestExcess.excess_qty} of the {biggestExcess.stock} {biggestExcess.unit} on hand is
+          more than {data.excess.threshold_days} days of use. Ordering less of it next time keeps that cash for items that
+          run out sooner. <span className="hint">Calculated from your records, not written by AI.</span>
+        </p>
+      )}
+
       <section className="panel" aria-labelledby="budget-title">
         <div className="panel-head">
           <h2 id="budget-title">Budget for {monthTitle(b.month)}</h2>
@@ -161,9 +214,15 @@ function Body({ months }: { months: number }) {
                       <td>{i.item}</td>
                       <td>{plural(i.days_left, "day")}</td>
                       <td className="num">
-                        {i.excess_qty} {i.unit}
+                        {i.excess_qty} of {i.stock} {i.unit}
+                        <span className="sub">above {data.excess.threshold_days} days of use</span>
                       </td>
-                      <td className="num">{money(i.excess_value)}</td>
+                      <td className="num">
+                        {money(i.excess_value)}
+                        <span className="sub">
+                          {i.excess_qty} {i.unit} at {money(i.unit_cost)}
+                        </span>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -227,7 +286,7 @@ export function AnalyticsTab() {
     <div className="stack">
       <section className="panel">
         <div className="panel-head">
-          <h2>Purchasing analytics</h2>
+          <h2>Time range</h2>
           <label className="inline">
             Show
             <select value={months} onChange={(e) => setMonths(Number(e.target.value))}>
@@ -241,6 +300,13 @@ export function AnalyticsTab() {
         </p>
       </section>
       <Body key={months} months={months} />
+      <section className="panel" aria-labelledby="ledger-title">
+        <div className="panel-head">
+          <h2 id="ledger-title">Purchase ledger</h2>
+          <p className="hint">Every purchase behind the figures above. Sort, search and export it.</p>
+        </div>
+        <LedgerGrid />
+      </section>
     </div>
   );
 }

@@ -14,7 +14,7 @@ from app.orders import Order, Status
 from app.policy import Policy
 from app.suppliers import Supplier
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIN_HISTORY = 3  # deliveries needed before a reliability figure is shown
 OPEN_STATUSES = (
     Status.PENDING_APPROVAL.value,
@@ -57,7 +57,8 @@ CREATE TABLE purchases (
     purchased_on TEXT NOT NULL, is_demo INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE webhook_events (
-    id TEXT PRIMARY KEY, event_type TEXT, summary TEXT, received_at TEXT NOT NULL
+    id TEXT PRIMARY KEY, event_type TEXT, summary TEXT, received_at TEXT NOT NULL,
+    resource_id TEXT
 );
 """
 
@@ -173,8 +174,10 @@ def _seed_purchases(conn: sqlite3.Connection, today: date) -> None:
     for months_ago, factor in DEMO_MONTH_FACTORS.items():
         start = _month_start(today, months_ago)
         for day, item, category, supplier, qty, total in DEMO_PURCHASE_PATTERN:
-            # This month, keep every purchase on or before today so nothing is dated in the future.
-            day = min(day, today.day) if months_ago == 0 else day
+            # This month, nothing may be dated in the future. Purchases that would be are spread over
+            # the days so far (rather than all piled onto today), so the ledger does not look duplicated.
+            if months_ago == 0 and day > today.day:
+                day = max(1, round(day * today.day / 28))
             conn.execute(
                 "INSERT INTO purchases (item, category, supplier, qty, total, purchased_on, is_demo) "
                 "VALUES (?,?,?,?,?,?,1)",
@@ -323,7 +326,11 @@ def save_order(conn, o: Order) -> None:
     )
 
 
-def create_order(conn, item: str, supplier_name: str, qty: int, total: float) -> Order:
+def create_order(
+    conn, item: str, supplier_name: str, qty: int, total: float, record: dict | None = None
+) -> Order:
+    """Create a proposed order. `record` is the decision record (why this order), kept on the
+    first timeline event so it travels with the order."""
     cur = conn.execute(
         "INSERT INTO orders (item, supplier_name, qty, total, status, timeline, created_at) "
         "VALUES (?,?,?,?,?,?,?)",
@@ -331,6 +338,8 @@ def create_order(conn, item: str, supplier_name: str, qty: int, total: float) ->
          datetime.now(timezone.utc).isoformat()),
     )
     order = Order(id=cur.lastrowid, supplier_name=supplier_name, qty=qty, total=total, item=item)
+    if record is not None:
+        order.timeline[0]["record"] = record
     save_order(conn, order)
     return order
 
@@ -401,11 +410,15 @@ def load_purchases(conn) -> list[dict]:
 
 # ---- Webhook events ----
 
-def record_webhook_event(conn, event_id: str, event_type: str | None, summary: str | None) -> bool:
-    """True if the event is new, False if it was already recorded."""
+def record_webhook_event(
+    conn, event_id: str, event_type: str | None, summary: str | None, resource_id: str | None = None
+) -> bool:
+    """True if the event is new, False if it was already recorded. Only call this after the
+    PayPal signature has been verified."""
     cur = conn.execute(
-        "INSERT OR IGNORE INTO webhook_events (id, event_type, summary, received_at) VALUES (?,?,?,?)",
-        (event_id, event_type, summary, datetime.now(timezone.utc).isoformat()),
+        "INSERT OR IGNORE INTO webhook_events (id, event_type, summary, received_at, resource_id) "
+        "VALUES (?,?,?,?,?)",
+        (event_id, event_type, summary, datetime.now(timezone.utc).isoformat(), resource_id),
     )
     return cur.rowcount == 1
 
@@ -414,4 +427,24 @@ def list_webhook_events(conn) -> list[dict]:
     return [
         {"id": r["id"], "type": r["event_type"], "summary": r["summary"]}
         for r in conn.execute("SELECT * FROM webhook_events ORDER BY received_at, id")
+    ]
+
+
+def events_for_resources(conn, resource_ids: list[str]) -> list[dict]:
+    """Verified PayPal events whose resource is one of the given PayPal ids (order, authorization
+    or capture), oldest first. Matching happens when the order is read, so an event that arrives
+    before the app has stored the id is still found later."""
+    ids = [r for r in resource_ids if r]
+    if not ids:
+        return []
+    marks = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT * FROM webhook_events WHERE resource_id IN ({marks}) ORDER BY received_at, id", ids
+    )
+    return [
+        {
+            "id": r["id"], "type": r["event_type"], "summary": r["summary"],
+            "resource_id": r["resource_id"], "time": r["received_at"],
+        }
+        for r in rows
     ]

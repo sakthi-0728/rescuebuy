@@ -41,3 +41,14 @@ export function monthLabel(month: string): string {
 export function monthTitle(month: string): string {
   return new Date(`${month}-01T00:00:00`).toLocaleString("en-US", { month: "long", year: "numeric" });
 }
+
+export function greeting(now: Date = new Date()): string {
+  const hour = now.getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+export function timeShort(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}

@@ -28,10 +28,56 @@ function sourceNote(r: AssistantResponse): string {
     : "Calculated from your data.";
 }
 
-function understoodNote(r: AssistantResponse): string | null {
-  if (r.routed_by === "gemini") return "Question understood by Gemini.";
-  if (r.routed_by === "keywords") return "Question understood by keyword matching (AI unavailable or unsure).";
-  return null;
+const LOOKUPS: Record<string, string> = {
+  stock_of: "Stock levels",
+  days_left: "Days of stock left",
+  running_out: "Items that could run out",
+  expiring: "Expiry dates",
+  what_to_reorder: "What to reorder",
+  order_cost: "Order cost",
+  budget_check: "Budget check",
+  best_supplier: "Supplier comparison",
+  late_supplier: "Late-delivery what-if",
+  order_status: "Order status",
+  refuse_action: "None: it cannot place orders",
+  none: "No matching lookup",
+};
+
+const UNDERSTOOD: Record<AssistantResponse["routed_by"], string> = {
+  gemini: "Gemini chose the lookup",
+  keywords: "Keyword matching (AI unavailable or unsure)",
+  rules: "Fixed rules",
+};
+
+/** What happened to produce an answer, taken from the fields the backend returned. */
+function Trace({ r }: { r: AssistantResponse }) {
+  const steps = [
+    { label: "Understood", value: UNDERSTOOD[r.routed_by] },
+    { label: "Looked up", value: LOOKUPS[r.tool] ?? r.tool },
+    { label: "Worded", value: r.answer.source === "gemini" ? "Gemini, numbers checked" : "Calculated from your data" },
+  ];
+  return (
+    <div className="trace">
+      <ol aria-label="How this answer was produced">
+        {steps.map((st) => (
+          <li key={st.label}>
+            <span className="trace-label">{st.label}</span>
+            <span className="trace-value">{st.value}</span>
+          </li>
+        ))}
+      </ol>
+      <details className="basis">
+        <summary>What it used</summary>
+        <ul>
+          {r.basis.map((b) => (
+            <li key={b}>{b}</li>
+          ))}
+          <li>As of {new Date(r.as_of).toLocaleTimeString()} (your current records).</li>
+          <li>Read-only: nothing was ordered, approved or paid.</li>
+        </ul>
+      </details>
+    </div>
+  );
 }
 
 export function AssistantTab() {
@@ -66,7 +112,7 @@ export function AssistantTab() {
     <div className="stack">
       <section className="panel" aria-labelledby="ask-title">
         <div className="panel-head">
-          <h2 id="ask-title">Ask Rescue AI</h2>
+          <h2 id="ask-title">Ask a question</h2>
           <p className="hint">Answers come from your inventory records. It cannot place orders.</p>
         </div>
 
@@ -97,7 +143,7 @@ export function AssistantTab() {
                 {m.response && (
                   <>
                     <p className="answer">{m.response.answer.text}</p>
-                    <p className="hint">{sourceNote(m.response)}</p>
+                    {m.response.tool === "refuse_action" && <p className="hint">{sourceNote(m.response)}</p>}
                     {m.response.suggestions.length > 0 && (
                       <div className="chips">
                         {m.response.suggestions.map((s) => (
@@ -107,18 +153,7 @@ export function AssistantTab() {
                         ))}
                       </div>
                     )}
-                    {(m.response.basis.length > 0 || understoodNote(m.response)) && (
-                      <details className="basis">
-                        <summary>How I got this</summary>
-                        <ul>
-                          {m.response.basis.map((b) => (
-                            <li key={b}>{b}</li>
-                          ))}
-                          <li>As of {new Date(m.response.as_of).toLocaleTimeString()} (your current records).</li>
-                          {understoodNote(m.response) && <li>{understoodNote(m.response)}</li>}
-                        </ul>
-                      </details>
-                    )}
+                    <Trace r={m.response} />
                   </>
                 )}
               </div>

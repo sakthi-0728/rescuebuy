@@ -1,0 +1,934 @@
+/* =====================================================================
+   RescueBuy design layer. Loaded after index.css, so it re-skins the base.
+
+   Idea: the runway. Every shelf has days of stock left and a delivery that
+   either arrives in time or does not. That bar-and-tick is the one picture
+   the app keeps returning to (briefing, board, cards). Everything else is
+   kept quiet.
+
+   Palette
+     Midnight  #0f1e33  sidebar and briefing
+     Proof     #f3f5f8  page
+     Emerald   #0a7457  actions
+     Butter    #f6c945  the one highlight (active nav, count, tick)
+     Crust     #8a4b08  warnings
+     Ink       #101c2b  text
+   Type: Bricolage Grotesque for headings and figures, Figtree for the interface.
+   ===================================================================== */
+
+:root {
+  --font-ui: "Figtree Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Bricolage Grotesque Variable", "Figtree Variable", system-ui, sans-serif;
+
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --ink: #101c2b;
+  --muted: #526078;
+  --line: #dce2ec;
+  --accent: #0a7457;
+  --accent-ink: #ffffff;
+  --accent-soft: #dff3ea;
+  --crit: #c0271e;
+  --crit-soft: #fdecea;
+  --warn: #8a4b08;
+  --warn-soft: #fdf0d4;
+  --ok: #17673f;
+  --ok-soft: #e0f3e7;
+  --track: #e3e8f0;
+  --banner-bg: #0f1e33;
+  --banner-ink: #f1f5fb;
+  --side-bg: #0b1729;
+  --side-ink: #dfe8f4;
+  --butter: #f6c945;
+  --mint: var(--butter);
+
+  font-family: var(--font-ui);
+  font-size: 15px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #09111e;
+    --surface: #111b2c;
+    --ink: #e7edf6;
+    --muted: #9aa8bf;
+    --line: #24324a;
+    --accent: #4fd1a5;
+    --accent-ink: #06130f;
+    --accent-soft: #123228;
+    --crit: #ff9a90;
+    --crit-soft: #3a1c1c;
+    --warn: #f3c46c;
+    --warn-soft: #3a2d10;
+    --ok: #7fd49c;
+    --ok-soft: #14301f;
+    --track: #1f2c43;
+    --banner-bg: #13263f;
+    --banner-ink: #eef3fa;
+    --side-bg: #060d19;
+  }
+}
+
+body {
+  font-family: var(--font-ui);
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Surfaces ---- */
+
+.panel {
+  border-radius: 16px;
+  padding: 20px 22px;
+}
+
+.panel h2 {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.panel h3 {
+  font-family: var(--font-ui);
+}
+
+.hint {
+  line-height: 1.45;
+}
+
+/* ---- Controls ---- */
+
+button {
+  font-family: inherit;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 10px;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 86%, black);
+  border-color: color-mix(in srgb, var(--accent) 86%, black);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+input,
+select {
+  font-family: inherit;
+  padding: 8px 12px;
+  border-radius: 10px;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.segmented {
+  border-radius: 10px;
+  padding: 3px;
+  gap: 2px;
+  background: var(--bg);
+}
+
+.segmented button {
+  border-radius: 8px;
+  padding: 5px 14px;
+  font-size: 13.5px;
+}
+
+.segmented button:hover:not(:disabled):not([aria-pressed="true"]) {
+  background: var(--track);
+  border-color: transparent;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  font-weight: 650;
+  border: 0;
+}
+
+.badge.pick {
+  margin-left: 8px;
+  background: var(--butter);
+  color: #231a02;
+}
+
+/* ---- Shell: sidebar ---- */
+
+.sidebar {
+  gap: 26px;
+  padding: 22px 12px;
+}
+
+.sidebar .brand {
+  gap: 11px;
+}
+
+.brand-name {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.brand-tag {
+  font-size: 12.5px;
+  line-height: 1.3;
+  max-width: 17ch;
+}
+
+/* The mark is a tiny runway: a bar that ends in a tick. */
+.mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+}
+
+.sidebar .mark {
+  background: var(--butter);
+}
+
+.mark::after {
+  left: 7px;
+  right: 14px;
+  bottom: 12px;
+  height: 7px;
+  border-radius: 3.5px;
+}
+
+.mark::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  right: 10px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--side-bg);
+}
+
+.side-nav {
+  gap: 2px;
+}
+
+.side-link {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 12px;
+  border-radius: 12px;
+  font-weight: 500;
+  position: relative;
+}
+
+.side-link:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: transparent;
+}
+
+.side-link.active {
+  background: rgba(255, 255, 255, 0.1);
+  font-weight: 650;
+}
+
+.side-link.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 10px;
+  bottom: 10px;
+  width: 4px;
+  border-radius: 0 3px 3px 0;
+  background: var(--butter);
+}
+
+.side-icon {
+  opacity: 0.8;
+}
+
+.side-link.active .side-icon {
+  opacity: 1;
+  color: var(--butter);
+}
+
+.side-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.side-text small {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.62;
+}
+
+.side-link .count {
+  background: var(--butter);
+  color: #231a02;
+  margin-left: 0;
+}
+
+.sidebar :focus-visible {
+  outline-color: var(--butter);
+}
+
+/* ---- Page header ---- */
+
+.content {
+  padding-top: 30px;
+}
+
+.page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px 24px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+
+.page-head h1 {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+}
+
+.page-head p {
+  margin-top: 4px;
+}
+
+.head-context {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.pill strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+/* ---- Briefing (the hero) ---- */
+
+.briefing {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  gap: 28px 40px;
+  align-items: center;
+  padding: 30px 32px;
+  border-radius: 20px;
+  background: var(--banner-bg);
+  color: var(--banner-ink);
+}
+
+.briefing:not(:has(.hero-runway)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.briefing-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.briefing h2 {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  margin: 4px 0 12px;
+  max-width: 20ch;
+}
+
+.briefing-greeting {
+  font-size: 14px;
+  opacity: 0.75;
+}
+
+.briefing-text {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.briefing-note {
+  margin-top: 8px;
+}
+
+button.on-dark {
+  margin-top: 18px;
+  background: var(--butter);
+  color: #231a02;
+  border-color: transparent;
+  font-size: 15px;
+  padding: 10px 20px;
+}
+
+button.on-dark:hover:not(:disabled) {
+  background: #ffd75e;
+  border-color: transparent;
+}
+
+.hero-runway {
+  margin: 0;
+  padding: 20px 22px 18px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+}
+
+.hero-runway figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13.5px;
+  opacity: 0.85;
+}
+
+.hero-runway figcaption strong {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.hero-track {
+  position: relative;
+  height: 18px;
+  margin: 40px 0 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.hero-fill {
+  height: 100%;
+  min-width: 10px;
+  border-radius: 9px;
+  background: var(--butter);
+}
+
+.hero-fill.tight {
+  background: #ff9d92;
+}
+
+.hero-tick {
+  position: absolute;
+  top: -10px;
+  bottom: -10px;
+  width: 3px;
+  border-radius: 2px;
+  background: #fff;
+}
+
+.hero-tick span {
+  position: absolute;
+  left: -1px;
+  bottom: calc(100% + 6px);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.hero-tick span.flip {
+  left: auto;
+  right: -1px;
+}
+
+.hero-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.hero-sum {
+  margin-top: 12px;
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+
+.hero-sum strong {
+  font-weight: 650;
+}
+
+/* ---- Summary tiles ---- */
+
+.tiles {
+  gap: 12px;
+}
+
+.tile {
+  position: relative;
+  overflow: hidden;
+  gap: 6px;
+  border-radius: 14px;
+  padding: 16px 18px 14px;
+}
+
+.tile.critical::before,
+.tile.warning::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 3px;
+  background: var(--crit);
+}
+
+.tile.warning::before {
+  background: var(--warn);
+}
+
+.tile-label {
+  font-size: 13.5px;
+}
+
+.tile-value {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+/* ---- Needs attention ---- */
+
+.alert {
+  border-radius: 12px;
+  border-left-width: 4px;
+}
+
+/* ---- Runway bar (inventory, alerts, board) ---- */
+
+.runway {
+  height: 12px;
+  border-radius: 6px;
+}
+
+.runway-fill {
+  border-radius: 6px;
+  min-width: 6px;
+}
+
+.runway-tick {
+  top: -4px;
+  bottom: -4px;
+  width: 3px;
+  border-radius: 2px;
+}
+
+.inv-card {
+  border-radius: 14px;
+}
+
+.inv-card h3,
+.inv-days {
+  font-family: var(--font-display);
+}
+
+.order-card {
+  border-radius: 16px;
+}
+
+.order-head h3,
+.order-total,
+.section-title {
+  font-family: var(--font-display);
+}
+
+/* ---- AG Grid ---- */
+
+.grid-wrap {
+  border-top: 1px solid var(--line);
+}
+
+.grid-wrap .ag-root-wrapper {
+  border: 0;
+}
+
+.grid-wrap .ag-cell {
+  display: flex;
+  align-items: center;
+  line-height: 1.3;
+}
+
+.grid-wrap .ag-header-cell-text {
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+
+.grid-wrap .ag-row-pinned {
+  background: var(--bg);
+  font-weight: 650;
+}
+
+.grid-wrap .ag-cell button {
+  padding: 6px 14px;
+  font-size: 13.5px;
+}
+
+.grid-wrap .ag-cell .badge {
+  min-height: 24px;
+}
+
+.grid-wrap .ag-paging-panel {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.grid-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.grid-name strong {
+  font-weight: 650;
+}
+
+.grid-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.grid-name span.warn-text {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.grid-runway {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.grid-runway .runway {
+  min-width: 0;
+}
+
+.grid-runway span {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.grid-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.grid-search {
+  flex: 1 1 240px;
+  max-width: 420px;
+}
+
+.grid-search input {
+  width: 100%;
+}
+
+.grid-legend {
+  margin: 0 0 12px;
+  max-width: 82ch;
+}
+
+/* Cells the person can change are tinted butter, so the grid reads as a control panel. */
+.grid-wrap .edit-cell {
+  cursor: pointer;
+  background: color-mix(in srgb, var(--butter) 14%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--butter) 55%, transparent);
+}
+
+.grid-wrap .edit-cell.changed {
+  background: color-mix(in srgb, var(--butter) 34%, var(--surface));
+  font-weight: 700;
+}
+
+/* ---- Decision matrix ---- */
+
+.matrix-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.25;
+}
+
+.matrix-cell span {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.matrix-cell span.bad {
+  color: var(--crit);
+}
+
+.matrix-none {
+  color: var(--muted);
+  opacity: 0.6;
+  font-size: 13px;
+}
+
+.matrix .ag-header-cell {
+  padding: 0 6px;
+}
+
+.matrix-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 0;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13.5px;
+  text-align: left;
+  white-space: normal;
+}
+
+.matrix-head .badge.pick {
+  margin-left: 0;
+}
+
+.matrix-head[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.grid-wrap .col-selected {
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+}
+
+.grid-wrap .ag-row-pinned .col-selected {
+  background: var(--accent-soft);
+}
+
+/* ---- Decision Lab ---- */
+
+.lab-form {
+  gap: 14px 16px;
+}
+
+.lab-form label,
+label.inline,
+.stress-controls label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.stress-controls {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.stress-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.strategy {
+  border-radius: 12px;
+  font-weight: 400;
+}
+
+.strategy[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+
+.strategy-name {
+  font-weight: 650;
+}
+
+/* ---- Ask Rescue AI ---- */
+
+.chip {
+  font-weight: 500;
+  padding: 6px 14px;
+}
+
+.bubble {
+  border-radius: 14px;
+}
+
+.trace {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.trace ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px 16px;
+}
+
+.trace li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-left: 16px;
+}
+
+.trace li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.trace-label {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.trace-value {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ---- Small screens ---- */
+
+@media (max-width: 900px) {
+  .side-link {
+    grid-template-columns: 20px auto auto;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  .side-text small {
+    display: none;
+  }
+  .side-link.active::before {
+    left: 12px;
+    right: 12px;
+    top: auto;
+    bottom: 2px;
+    width: auto;
+    height: 3px;
+    border-radius: 2px;
+  }
+  .briefing {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .page-head h1 {
+    font-size: 28px;
+  }
+  .briefing {
+    padding: 22px 20px;
+  }
+  .briefing h2 {
+    font-size: 26px;
+  }
+  .panel {
+    padding: 16px;
+  }
+}
+
+/* The Decision Lab's one-paragraph answer reads as the headline of the page. */
+.panel > .lead {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+  max-width: 62ch;
+  margin-bottom: 6px;
+}
+
+.swipe-hint {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .side-link {
+    flex: none;
+  }
+  .side-nav {
+    gap: 4px;
+    padding-bottom: 4px;
+  }
+}
+
+@media (max-width: 720px) {
+  .swipe-hint {
+    display: inline;
+  }
+  .panel > .lead {
+    font-size: 17px;
+  }
+}

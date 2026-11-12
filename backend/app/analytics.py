@@ -69,6 +69,8 @@ def excess_stock(views: list[dict], threshold_days: float = EXCESS_DAYS) -> dict
             {
                 "item": v["item"],
                 "unit": v["unit"],
+                "stock": v["stock"],
+                "unit_cost": v["unit_cost"],
                 "days_left": round(days, 1),
                 "excess_qty": round(qty, 1),
                 "excess_value": round(qty * v["unit_cost"], 2),
